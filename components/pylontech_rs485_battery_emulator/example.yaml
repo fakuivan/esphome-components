@@ -1,32 +1,62 @@
 
-# This component will be able to be turned on/off on demand. (it will essentially
-# just ignore incoming packets). That way we can simulate the BMS being unplugged
+# First cut: only 0x4F, 0x42 and 0x92 are implemented.
+# Returning {} from any required lambda stops all communication, including 0x4F.
 pylontech_rs485_battery_emulator:
+  id: battery_emulator
   uart_id: <>
-  sensor_stale_time: 10s
-  on_stop:
-  on_start:
   commands:
+    # System-wide commands
+    # Do not implement this one for now
     system_charge_discharge_information:
-      # Each one of these fields can either be the id of a (binary) sensor or
-      # a lambda.
-      if_missing: stop|send_communication_error
-      when_missing: # action to run if there are missing fields
       fields:
-        charge_voltage_upper_limit:
-          # if lambda returns nullopt then this will be considered a missing field
-          lambda: return {};
-          # Unit is here just to assert that the user knows the unit the lambda
-          # should return the value in
-          unit: mV
-        # When using a sensor, the unit will be normalized to the unit without the prefix
-        discharge_voltage_lower_limit: my_discharge_voltage_sensor
+        charge_voltage_upper_limit: !lambda return 56000;
+        discharge_voltage_lower_limit: !lambda return 47000;
+        max_charge_current: !lambda return 250;
+        max_discharge_current: !lambda return 500;
+        charge_discharge_status:
+          charge_enable: !lambda return true;
+          discharge_enable: !lambda return true;
+          charge_immediately: !lambda return false;
+          full_charge_request: !lambda return false;
+# Example offline gate:
+#        charge_voltage_upper_limit: !lambda return {};
+
+# Each field will be a lambda that returns the requested value or a nullopt
+# if the request failed. By default, if any of the lambdas on a packet
+# return a nullopt, the response will be a CommunicationError (0x91) response
+
+pylontech_rs485_pack: 
+  # optional, if one emulator component exists then this is not needed
+  emulator_id: battery_emulator
+  # 1 is the master battery, subsequent batteries increment from 1 to the max
+  # defined in the spec. The "ADR" field is derived from this
+  battery_number: 1
+  commands:
+    # Pack-specific commands
+    analog_values:
+      fields:
+        cell_voltages:
+          number_of_cells:
+          # returns optional<std::array<>> or a single value representing the average
+          lambda:
+        bms_temperature:
+        cell_temperatures:
+          number_of_probes:
+          # returns optional<std::array<>>
+          lambda:
+      current:
+      voltage:
+      module_capacity:
+      cycles:
+    charge_discharge_management_info:
+      fields:
+        max_charge_voltage:
+        min_discharge_voltage:
         max_charge_current:
         max_discharge_current:
-        charge_discharge_status:
-          # Each of these will be either a binary sensor or a lambda, without the unit
-          # of course, same nullopt logic applies here
+        status_flags:
           charge_enable:
           discharge_enable:
-          charge_immediately:
+          force_charge_1:
+          force_charge_2:
           full_charge_request:
