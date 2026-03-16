@@ -1,0 +1,32 @@
+
+# This component will be able to be turned on/off on demand. (it will essentially
+# just ignore incoming packets). That way we can simulate the BMS being unplugged
+pylontech_rs485_battery_emulator:
+  uart_id: <>
+  sensor_stale_time: 10s
+  on_stop:
+  on_start:
+  commands:
+    system_charge_discharge_information:
+      # Each one of these fields can either be the id of a (binary) sensor or
+      # a lambda.
+      if_missing: stop|send_communication_error
+      when_missing: # action to run if there are missing fields
+      fields:
+        charge_voltage_upper_limit:
+          # if lambda returns nullopt then this will be considered a missing field
+          lambda: return {};
+          # Unit is here just to assert that the user knows the unit the lambda
+          # should return the value in
+          unit: mV
+        # When using a sensor, the unit will be normalized to the unit without the prefix
+        discharge_voltage_lower_limit: my_discharge_voltage_sensor
+        max_charge_current:
+        max_discharge_current:
+        charge_discharge_status:
+          # Each of these will be either a binary sensor or a lambda, without the unit
+          # of course, same nullopt logic applies here
+          charge_enable:
+          discharge_enable:
+          charge_immediately:
+          full_charge_request:
