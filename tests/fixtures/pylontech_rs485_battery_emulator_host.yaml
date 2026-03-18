@@ -3,6 +3,12 @@ esphome:
   platformio_options:
     build_flags:
       - -pthread
+      - -Og
+      - -g3
+      - -fsanitize=address
+      - -fsanitize=undefined
+      - -fno-sanitize-recover=all
+      - -fno-omit-frame-pointer
 
 host:
 

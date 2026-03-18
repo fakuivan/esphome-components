@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import tty
 import unittest
@@ -25,7 +26,15 @@ FIXTURE_PATH = (
     ROOT / "tests" / "fixtures" / "pylontech_rs485_battery_emulator_host.yaml"
 )
 REQUEST_TIMEOUT = 5.0
-STARTUP_TIMEOUT = 5.0
+STARTUP_TIMEOUT = 15.0
+NO_RESPONSE_TIMEOUT = 0.5
+ASAN_OPTIONS = "detect_leaks=1:halt_on_error=1"
+UBSAN_OPTIONS = "halt_on_error=1:print_stacktrace=1"
+SANITIZER_MARKERS = (
+    "AddressSanitizer:",
+    "UndefinedBehaviorSanitizer:",
+    "runtime error:",
+)
 
 
 @dataclass(frozen=True)
@@ -35,6 +44,44 @@ class DecodedFrame:
     cid1: int
     cid2: int
     info: bytes
+
+
+class ProcessOutputMonitor:
+    def __init__(self, proc: subprocess.Popen[str]) -> None:
+        self.proc = proc
+        self.lines: list[str] = []
+        self.sanitizer_lines: list[str] = []
+        self._thread = threading.Thread(target=self._read, daemon=True)
+        self._thread.start()
+
+    def _read(self) -> None:
+        stdout = self.proc.stdout
+        if stdout is None:
+            return
+        for line in stdout:
+            stripped = line.rstrip()
+            self.lines.append(stripped)
+            if any(marker in stripped for marker in SANITIZER_MARKERS):
+                self.sanitizer_lines.append(stripped)
+
+    def join(self, timeout: float = 5.0) -> None:
+        self._thread.join(timeout=timeout)
+
+    def fail_if_unhealthy(self, test_case: unittest.TestCase, context: str) -> None:
+        if self.sanitizer_lines:
+            tail = "\n".join(self.lines[-100:])
+            test_case.fail(
+                f"Sanitizer error detected while {context}:\n{tail}"
+            )
+        return_code = self.proc.poll()
+        if return_code is None or return_code == 0:
+            return
+        if return_code in (-signal.SIGINT, -signal.SIGTERM, -signal.SIGKILL):
+            return
+        tail = "\n".join(self.lines[-100:])
+        test_case.fail(
+            f"Host process exited unexpectedly while {context}: {return_code}\n{tail}"
+        )
 
 
 def twos_complement_checksum(data: bytes, bits: int) -> int:
@@ -165,6 +212,13 @@ def get_binary_path(config_path: Path) -> Path:
     return Path(get_idedata(config).firmware_elf_path)
 
 
+def sanitizer_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["ASAN_OPTIONS"] = ASAN_OPTIONS
+    env["UBSAN_OPTIONS"] = UBSAN_OPTIONS
+    return env
+
+
 def read_frame_from_fd(fd: int, timeout: float = REQUEST_TIMEOUT) -> bytes:
     buffer = bytearray()
     deadline = time.monotonic() + timeout
@@ -183,15 +237,23 @@ def read_frame_from_fd(fd: int, timeout: float = REQUEST_TIMEOUT) -> bytes:
     raise TimeoutError("Timed out waiting for emulator response frame")
 
 
-def terminate_process(proc: subprocess.Popen[str]) -> str:
+def assert_no_frame_from_fd(fd: int, timeout: float = NO_RESPONSE_TIMEOUT) -> None:
+    readable, _, _ = select.select([fd], [], [], timeout)
+    if readable:
+        frame = os.read(fd, 512)
+        raise AssertionError(f"Unexpected response frame received: {frame!r}")
+
+
+def terminate_process(proc: subprocess.Popen[str], monitor: ProcessOutputMonitor) -> str:
     with contextlib.suppress(ProcessLookupError):
         proc.send_signal(signal.SIGINT)
     try:
-        stdout, _ = proc.communicate(timeout=5)
+        proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
         proc.kill()
-        stdout, _ = proc.communicate(timeout=5)
-    return stdout
+        proc.wait(timeout=5)
+    monitor.join()
+    return "\n".join(monitor.lines)
 
 
 class PylontechRS485BatteryEmulatorE2ETest(unittest.TestCase):
@@ -201,6 +263,7 @@ class PylontechRS485BatteryEmulatorE2ETest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             master_fd, slave_fd = pty.openpty()
             proc: subprocess.Popen[str] | None = None
+            monitor: ProcessOutputMonitor | None = None
             uart_path: Path | None = None
             try:
                 tty.setraw(master_fd)
@@ -223,6 +286,7 @@ class PylontechRS485BatteryEmulatorE2ETest(unittest.TestCase):
                     cwd=tmpdir,
                     capture_output=True,
                     text=True,
+                    env=sanitizer_env(),
                 )
                 self.assertEqual(
                     compile_proc.returncode,
@@ -237,20 +301,36 @@ class PylontechRS485BatteryEmulatorE2ETest(unittest.TestCase):
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
+                    env=sanitizer_env(),
                 )
+                monitor = ProcessOutputMonitor(proc)
 
                 deadline = time.monotonic() + STARTUP_TIMEOUT
                 while time.monotonic() < deadline:
                     if proc.poll() is not None:
-                        stdout = proc.stdout.read() if proc.stdout is not None else ""
+                        stdout = "\n".join(monitor.lines) if monitor is not None else ""
                         self.fail(
                             f"Host binary exited before test traffic started:\n{stdout}"
                         )
                     time.sleep(0.1)
+                    monitor.fail_if_unhealthy(self, "starting the host binary")
                     break
+
+                os.write(master_fd, b"~20\r")
+                assert_no_frame_from_fd(master_fd)
+                monitor.fail_if_unhealthy(self, "handling a truncated frame")
+
+                bad_checksum_request = bytearray(
+                    encode_request(address=0x02, cid2=0x4F)
+                )
+                bad_checksum_request[-2] = ord("0")
+                os.write(master_fd, bytes(bad_checksum_request))
+                assert_no_frame_from_fd(master_fd)
+                monitor.fail_if_unhealthy(self, "handling a bad-checksum frame")
 
                 os.write(master_fd, encode_request(address=0x02, cid2=0x4F))
                 version_frame = decode_frame(read_frame_from_fd(master_fd))
+                monitor.fail_if_unhealthy(self, "handling the version request")
                 self.assertEqual(version_frame.version, 0x20)
                 self.assertEqual(version_frame.address, 0x02)
                 self.assertEqual(version_frame.cid1, 0x46)
@@ -261,6 +341,7 @@ class PylontechRS485BatteryEmulatorE2ETest(unittest.TestCase):
                     master_fd, encode_request(address=0x02, cid2=0x42, info=b"\x02")
                 )
                 analog_frame = decode_frame(read_frame_from_fd(master_fd))
+                monitor.fail_if_unhealthy(self, "handling the analog values request")
                 self.assertEqual(analog_frame.cid2, 0x00)
                 analog = decode_analog_values(analog_frame.info)
                 self.assertEqual(analog["data_flag"], 0x00)
@@ -297,6 +378,9 @@ class PylontechRS485BatteryEmulatorE2ETest(unittest.TestCase):
                     master_fd, encode_request(address=0x02, cid2=0x92, info=b"\x02")
                 )
                 management_frame = decode_frame(read_frame_from_fd(master_fd))
+                monitor.fail_if_unhealthy(
+                    self, "handling the management info request"
+                )
                 self.assertEqual(management_frame.cid2, 0x00)
                 management = decode_management_info(management_frame.info)
                 self.assertEqual(management["pack_address"], 0x02)
@@ -310,11 +394,16 @@ class PylontechRS485BatteryEmulatorE2ETest(unittest.TestCase):
                     master_fd, encode_request(address=0x02, cid2=0x42, info=b"\x03")
                 )
                 address_error_frame = decode_frame(read_frame_from_fd(master_fd))
+                monitor.fail_if_unhealthy(self, "handling the address error path")
                 self.assertEqual(address_error_frame.cid2, 0x90)
                 self.assertEqual(address_error_frame.info, b"")
             finally:
                 if proc is not None:
-                    stdout = terminate_process(proc)
+                    if monitor is None:
+                        self.fail("Process monitor was not created for host binary")
+                    stdout = terminate_process(proc, monitor)
+                    if monitor.sanitizer_lines:
+                        self.fail(f"Sanitizer error detected in host output:\n{stdout}")
                     if proc.returncode not in (0, -signal.SIGINT):
                         self.fail(
                             f"Unexpected host process exit code {proc.returncode}:\n{stdout}"
