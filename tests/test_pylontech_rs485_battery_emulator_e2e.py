@@ -1,23 +1,20 @@
 from __future__ import annotations
 
-import contextlib
 from dataclasses import dataclass
 import os
 from pathlib import Path
-import pty
 import select
 import signal
-import subprocess
-import sys
 import tempfile
-import threading
 import time
-import tty
 import unittest
 
-import esphome.config
-from esphome.core import CORE
-from esphome.platformio_api import get_idedata
+from .host_sanitizer_utils import (
+    RunningHostBinary,
+    assert_host_starts_cleanly,
+    start_host_binary,
+    stop_host_binary,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,16 +22,14 @@ COMPONENTS_ROOT = ROOT / "components"
 FIXTURE_PATH = (
     ROOT / "tests" / "fixtures" / "pylontech_rs485_battery_emulator_host.yaml"
 )
-REQUEST_TIMEOUT = 5.0
-STARTUP_TIMEOUT = 15.0
-NO_RESPONSE_TIMEOUT = 0.5
-ASAN_OPTIONS = "detect_leaks=1:halt_on_error=1"
-UBSAN_OPTIONS = "halt_on_error=1:print_stacktrace=1"
-SANITIZER_MARKERS = (
-    "AddressSanitizer:",
-    "UndefinedBehaviorSanitizer:",
-    "runtime error:",
+ASAN_FIXTURE_PATH = (
+    ROOT / "tests" / "fixtures" / "pylontech_rs485_battery_emulator_asan.yaml"
 )
+UBSAN_FIXTURE_PATH = (
+    ROOT / "tests" / "fixtures" / "pylontech_rs485_battery_emulator_ubsan.yaml"
+)
+REQUEST_TIMEOUT = 5.0
+NO_RESPONSE_TIMEOUT = 0.5
 
 
 @dataclass(frozen=True)
@@ -44,44 +39,6 @@ class DecodedFrame:
     cid1: int
     cid2: int
     info: bytes
-
-
-class ProcessOutputMonitor:
-    def __init__(self, proc: subprocess.Popen[str]) -> None:
-        self.proc = proc
-        self.lines: list[str] = []
-        self.sanitizer_lines: list[str] = []
-        self._thread = threading.Thread(target=self._read, daemon=True)
-        self._thread.start()
-
-    def _read(self) -> None:
-        stdout = self.proc.stdout
-        if stdout is None:
-            return
-        for line in stdout:
-            stripped = line.rstrip()
-            self.lines.append(stripped)
-            if any(marker in stripped for marker in SANITIZER_MARKERS):
-                self.sanitizer_lines.append(stripped)
-
-    def join(self, timeout: float = 5.0) -> None:
-        self._thread.join(timeout=timeout)
-
-    def fail_if_unhealthy(self, test_case: unittest.TestCase, context: str) -> None:
-        if self.sanitizer_lines:
-            tail = "\n".join(self.lines[-100:])
-            test_case.fail(
-                f"Sanitizer error detected while {context}:\n{tail}"
-            )
-        return_code = self.proc.poll()
-        if return_code is None or return_code == 0:
-            return
-        if return_code in (-signal.SIGINT, -signal.SIGTERM, -signal.SIGKILL):
-            return
-        tail = "\n".join(self.lines[-100:])
-        test_case.fail(
-            f"Host process exited unexpectedly while {context}: {return_code}\n{tail}"
-        )
 
 
 def twos_complement_checksum(data: bytes, bits: int) -> int:
@@ -201,24 +158,6 @@ def decode_management_info(info: bytes) -> dict[str, object]:
     }
 
 
-def get_binary_path(config_path: Path) -> Path:
-    CORE.reset()
-    CORE.config_path = config_path
-    config = esphome.config.read_config(
-        {"command": "compile", "config": str(config_path)}
-    )
-    if config is None:
-        raise RuntimeError(f"Failed to read config from {config_path}")
-    return Path(get_idedata(config).firmware_elf_path)
-
-
-def sanitizer_env() -> dict[str, str]:
-    env = os.environ.copy()
-    env["ASAN_OPTIONS"] = ASAN_OPTIONS
-    env["UBSAN_OPTIONS"] = UBSAN_OPTIONS
-    return env
-
-
 def read_frame_from_fd(fd: int, timeout: float = REQUEST_TIMEOUT) -> bytes:
     buffer = bytearray()
     deadline = time.monotonic() + timeout
@@ -244,93 +183,41 @@ def assert_no_frame_from_fd(fd: int, timeout: float = NO_RESPONSE_TIMEOUT) -> No
         raise AssertionError(f"Unexpected response frame received: {frame!r}")
 
 
-def terminate_process(proc: subprocess.Popen[str], monitor: ProcessOutputMonitor) -> str:
-    with contextlib.suppress(ProcessLookupError):
-        proc.send_signal(signal.SIGINT)
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=5)
-    monitor.join()
-    return "\n".join(monitor.lines)
-
-
 class PylontechRS485BatteryEmulatorE2ETest(unittest.TestCase):
     maxDiff = None
 
     def test_manual_protocol_frames(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            master_fd, slave_fd = pty.openpty()
-            proc: subprocess.Popen[str] | None = None
-            monitor: ProcessOutputMonitor | None = None
-            uart_path: Path | None = None
+            running: RunningHostBinary | None = None
             try:
-                tty.setraw(master_fd)
-                tty.setraw(slave_fd)
-                slave_path = os.ttyname(slave_fd)
-                uart_path = Path(tempfile.mktemp(prefix="pylontech-uart-", dir="/tmp"))
-                uart_path.symlink_to(slave_path)
+                _, running = start_host_binary(tmpdir, FIXTURE_PATH, COMPONENTS_ROOT)
+                assert_host_starts_cleanly(running)
 
-                config_path = (
-                    Path(tmpdir) / "pylontech_rs485_battery_emulator_host.yaml"
-                )
-                config_path.write_text(
-                    FIXTURE_PATH.read_text()
-                    .replace("EXTERNAL_COMPONENT_PATH", str(COMPONENTS_ROOT))
-                    .replace("UART_PORT_PATH", str(uart_path))
-                )
+                os.write(running.master_fd, b"~20\r")
+                assert_no_frame_from_fd(running.master_fd)
+                running.monitor.assert_healthy("handling a truncated frame")
 
-                compile_proc = subprocess.run(
-                    [sys.executable, "-m", "esphome", "compile", str(config_path)],
-                    cwd=tmpdir,
-                    capture_output=True,
-                    text=True,
-                    env=sanitizer_env(),
-                )
-                self.assertEqual(
-                    compile_proc.returncode,
-                    0,
-                    msg=(compile_proc.stdout or "") + (compile_proc.stderr or ""),
-                )
-
-                binary_path = get_binary_path(config_path)
-                proc = subprocess.Popen(
-                    [str(binary_path)],
-                    cwd=tmpdir,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    env=sanitizer_env(),
-                )
-                monitor = ProcessOutputMonitor(proc)
-
-                deadline = time.monotonic() + STARTUP_TIMEOUT
-                while time.monotonic() < deadline:
-                    if proc.poll() is not None:
-                        stdout = "\n".join(monitor.lines) if monitor is not None else ""
-                        self.fail(
-                            f"Host binary exited before test traffic started:\n{stdout}"
-                        )
-                    time.sleep(0.1)
-                    monitor.fail_if_unhealthy(self, "starting the host binary")
-                    break
-
-                os.write(master_fd, b"~20\r")
-                assert_no_frame_from_fd(master_fd)
-                monitor.fail_if_unhealthy(self, "handling a truncated frame")
+                os.write(running.master_fd, b"~2002464G0000FC6F\r")
+                assert_no_frame_from_fd(running.master_fd)
+                running.monitor.assert_healthy("handling an invalid-hex frame")
 
                 bad_checksum_request = bytearray(
                     encode_request(address=0x02, cid2=0x4F)
                 )
                 bad_checksum_request[-2] = ord("0")
-                os.write(master_fd, bytes(bad_checksum_request))
-                assert_no_frame_from_fd(master_fd)
-                monitor.fail_if_unhealthy(self, "handling a bad-checksum frame")
+                os.write(running.master_fd, bytes(bad_checksum_request))
+                assert_no_frame_from_fd(running.master_fd)
+                running.monitor.assert_healthy("handling a bad-checksum frame")
 
-                os.write(master_fd, encode_request(address=0x02, cid2=0x4F))
-                version_frame = decode_frame(read_frame_from_fd(master_fd))
-                monitor.fail_if_unhealthy(self, "handling the version request")
+                os.write(running.master_fd, b"~2002464F1000EC6A\r")
+                assert_no_frame_from_fd(running.master_fd)
+                running.monitor.assert_healthy(
+                    "handling an unsupported-info-size frame"
+                )
+
+                os.write(running.master_fd, encode_request(address=0x02, cid2=0x4F))
+                version_frame = decode_frame(read_frame_from_fd(running.master_fd))
+                running.monitor.assert_healthy("handling the version request")
                 self.assertEqual(version_frame.version, 0x20)
                 self.assertEqual(version_frame.address, 0x02)
                 self.assertEqual(version_frame.cid1, 0x46)
@@ -338,10 +225,11 @@ class PylontechRS485BatteryEmulatorE2ETest(unittest.TestCase):
                 self.assertEqual(version_frame.info, b"")
 
                 os.write(
-                    master_fd, encode_request(address=0x02, cid2=0x42, info=b"\x02")
+                    running.master_fd,
+                    encode_request(address=0x02, cid2=0x42, info=b"\x02"),
                 )
-                analog_frame = decode_frame(read_frame_from_fd(master_fd))
-                monitor.fail_if_unhealthy(self, "handling the analog values request")
+                analog_frame = decode_frame(read_frame_from_fd(running.master_fd))
+                running.monitor.assert_healthy("handling the analog values request")
                 self.assertEqual(analog_frame.cid2, 0x00)
                 analog = decode_analog_values(analog_frame.info)
                 self.assertEqual(analog["data_flag"], 0x00)
@@ -375,12 +263,11 @@ class PylontechRS485BatteryEmulatorE2ETest(unittest.TestCase):
                 self.assertEqual(analog["cycle_count"], 2)
 
                 os.write(
-                    master_fd, encode_request(address=0x02, cid2=0x92, info=b"\x02")
+                    running.master_fd,
+                    encode_request(address=0x02, cid2=0x92, info=b"\x02"),
                 )
-                management_frame = decode_frame(read_frame_from_fd(master_fd))
-                monitor.fail_if_unhealthy(
-                    self, "handling the management info request"
-                )
+                management_frame = decode_frame(read_frame_from_fd(running.master_fd))
+                running.monitor.assert_healthy("handling the management info request")
                 self.assertEqual(management_frame.cid2, 0x00)
                 management = decode_management_info(management_frame.info)
                 self.assertEqual(management["pack_address"], 0x02)
@@ -391,27 +278,96 @@ class PylontechRS485BatteryEmulatorE2ETest(unittest.TestCase):
                 self.assertEqual(management["status_flags"], 0xD0)
 
                 os.write(
-                    master_fd, encode_request(address=0x02, cid2=0x42, info=b"\x03")
+                    running.master_fd,
+                    encode_request(address=0x02, cid2=0x42, info=b"\x03"),
                 )
-                address_error_frame = decode_frame(read_frame_from_fd(master_fd))
-                monitor.fail_if_unhealthy(self, "handling the address error path")
+                address_error_frame = decode_frame(
+                    read_frame_from_fd(running.master_fd)
+                )
+                running.monitor.assert_healthy("handling the address error path")
                 self.assertEqual(address_error_frame.cid2, 0x90)
                 self.assertEqual(address_error_frame.info, b"")
             finally:
-                if proc is not None:
-                    if monitor is None:
-                        self.fail("Process monitor was not created for host binary")
-                    stdout = terminate_process(proc, monitor)
-                    if monitor.sanitizer_lines:
+                if running is not None:
+                    stdout = stop_host_binary(running)
+                    if running.monitor.sanitizer_lines:
                         self.fail(f"Sanitizer error detected in host output:\n{stdout}")
-                    if proc.returncode not in (0, -signal.SIGINT):
+                    if running.proc.returncode not in (0, -signal.SIGINT):
                         self.fail(
-                            f"Unexpected host process exit code {proc.returncode}:\n{stdout}"
+                            f"Unexpected host process exit code {running.proc.returncode}:\n{stdout}"
                         )
-                if uart_path is not None:
-                    uart_path.unlink(missing_ok=True)
-                os.close(master_fd)
-                os.close(slave_fd)
+
+    def test_sanitizer_harness_detects_ubsan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            running: RunningHostBinary | None = None
+            try:
+                _, running = start_host_binary(
+                    tmpdir, UBSAN_FIXTURE_PATH, COMPONENTS_ROOT
+                )
+                assert_host_starts_cleanly(running)
+
+                os.write(
+                    running.master_fd,
+                    encode_request(address=0x02, cid2=0x42, info=b"\x02"),
+                )
+
+                deadline = time.monotonic() + REQUEST_TIMEOUT
+                while time.monotonic() < deadline:
+                    if running.monitor.sanitizer_lines:
+                        break
+                    if running.proc.poll() is not None:
+                        break
+                    time.sleep(0.1)
+
+                self.assertTrue(
+                    running.monitor.sanitizer_lines,
+                    msg="Expected UBSan output after deliberate signed overflow",
+                )
+                self.assertIn(
+                    "runtime error:",
+                    "\n".join(running.monitor.lines),
+                )
+                self.assertNotEqual(running.proc.poll(), 0)
+            finally:
+                if running is not None:
+                    stdout = stop_host_binary(running)
+                    self.assertIn("runtime error:", stdout)
+
+    def test_sanitizer_harness_detects_asan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            running: RunningHostBinary | None = None
+            try:
+                _, running = start_host_binary(
+                    tmpdir, ASAN_FIXTURE_PATH, COMPONENTS_ROOT
+                )
+                assert_host_starts_cleanly(running)
+
+                os.write(
+                    running.master_fd,
+                    encode_request(address=0x02, cid2=0x42, info=b"\x02"),
+                )
+
+                deadline = time.monotonic() + REQUEST_TIMEOUT
+                while time.monotonic() < deadline:
+                    if running.monitor.sanitizer_lines:
+                        break
+                    if running.proc.poll() is not None:
+                        break
+                    time.sleep(0.1)
+
+                self.assertTrue(
+                    running.monitor.sanitizer_lines,
+                    msg="Expected ASan output after deliberate use-after-free",
+                )
+                self.assertIn(
+                    "AddressSanitizer:",
+                    "\n".join(running.monitor.lines),
+                )
+                self.assertNotEqual(running.proc.poll(), 0)
+            finally:
+                if running is not None:
+                    stdout = stop_host_binary(running)
+                    self.assertIn("AddressSanitizer:", stdout)
 
 
 if __name__ == "__main__":

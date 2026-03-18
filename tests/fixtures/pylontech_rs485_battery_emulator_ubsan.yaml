@@ -1,0 +1,63 @@
+esphome:
+  name: pylontech-rs485-ub
+  platformio_options:
+    build_flags:
+      - -pthread
+      - -Og
+      - -g3
+      - -fsanitize=address
+      - -fsanitize=undefined
+      - -fno-sanitize-recover=all
+      - -fno-omit-frame-pointer
+
+host:
+
+logger:
+  level: INFO
+
+external_components:
+  - source:
+      type: local
+      path: EXTERNAL_COMPONENT_PATH
+    components: [pylontech_rs485_battery_emulator]
+
+uart:
+  id: uart_bus
+  port: UART_PORT_PATH
+  baud_rate: 115200
+
+pylontech_rs485_battery_emulator:
+  id: battery_emulator
+  uart_id: uart_bus
+  protocol_version: 0x20
+  packs:
+    - battery_number: 1
+      analog_values:
+        cell_voltages: !lambda |-
+          esphome::StaticVector<uint16_t, 16> values;
+          values.push_back(3300);
+          return values;
+        bms_temperature: !lambda return 3011;
+        cell_temperatures: !lambda |-
+          esphome::StaticVector<uint16_t, 8> values;
+          values.push_back(3011);
+          return values;
+        current: !lambda |-
+          int overflow = 2147483647;
+          overflow = overflow + 1;
+          return overflow;
+        voltage: !lambda return 50981;
+        remaining_capacity: !lambda return 51800;
+        module_capacity: !lambda return 60000;
+        cycles: !lambda return 2;
+      charge_discharge_management_info:
+        charge_voltage_upper_limit: !lambda return 56000;
+        discharge_voltage_lower_limit: !lambda return 47000;
+        max_charge_current: !lambda return 250;
+        max_discharge_current: !lambda return 500;
+        status_flags:
+          charge_enable: !lambda return true;
+          discharge_enable: !lambda return true;
+          force_charge_1: !lambda return false;
+          force_charge_2: !lambda return true;
+          full_charge_request: !lambda return false;
