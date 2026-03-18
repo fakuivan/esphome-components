@@ -1,0 +1,220 @@
+esphome:
+  name: pylontech-rs485-api-e2e
+  platformio_options:
+    build_flags:
+      - -pthread
+      - -Og
+      - -g3
+      - -fsanitize=address
+      - -fsanitize=undefined
+      - -fno-sanitize-recover=all
+      - -fno-omit-frame-pointer
+
+host:
+
+api:
+  port: API_PORT
+  actions:
+    - action: set_battery_analog_values
+      variables:
+        battery_number: int
+        cells: int[]
+        bms_temperature: int
+        temperatures: int[]
+        current: int
+        voltage: int
+        remaining_capacity: int
+        module_capacity: int
+        cycles: int
+      then:
+        - lambda: |-
+            if (battery_number != 1) {
+              ESP_LOGW("pylontech_test", "Unsupported battery_number=%d", battery_number);
+              return;
+            }
+            if (cells.empty() || cells.size() > 16 || temperatures.size() > 8 ||
+                bms_temperature < 0 || bms_temperature > 0xFFFF ||
+                current < INT16_MIN || current > INT16_MAX ||
+                voltage < 0 || voltage > 0xFFFF ||
+                remaining_capacity < 0 || module_capacity < 0 ||
+                cycles < 0 || cycles > 0xFFFF) {
+              ESP_LOGW("pylontech_test", "Rejected analog update");
+              return;
+            }
+
+            esphome::StaticVector<uint16_t, 16> converted_cells;
+            for (const int32_t cell : cells) {
+              if (cell < 0 || cell > 0xFFFF) {
+                ESP_LOGW("pylontech_test", "Rejected cell voltage=%d", cell);
+                return;
+              }
+              converted_cells.push_back(static_cast<uint16_t>(cell));
+            }
+
+            esphome::StaticVector<uint16_t, 8> converted_temperatures;
+            for (const int32_t temperature : temperatures) {
+              if (temperature < 0 || temperature > 0xFFFF) {
+                ESP_LOGW("pylontech_test", "Rejected cell temperature=%d", temperature);
+                return;
+              }
+              converted_temperatures.push_back(static_cast<uint16_t>(temperature));
+            }
+
+            id(pack_1_cell_voltages) = converted_cells;
+            id(pack_1_bms_temperature) = static_cast<uint16_t>(bms_temperature);
+            id(pack_1_cell_temperatures) = converted_temperatures;
+            id(pack_1_current) = static_cast<int16_t>(current);
+            id(pack_1_voltage) = static_cast<uint16_t>(voltage);
+            id(pack_1_remaining_capacity) = static_cast<uint32_t>(remaining_capacity);
+            id(pack_1_module_capacity) = static_cast<uint32_t>(module_capacity);
+            id(pack_1_cycles) = static_cast<uint16_t>(cycles);
+
+    - action: set_battery_management_info
+      variables:
+        battery_number: int
+        charge_voltage_upper_limit: int
+        discharge_voltage_lower_limit: int
+        max_charge_current: int
+        max_discharge_current: int
+        charge_enable: bool
+        discharge_enable: bool
+        force_charge_1: bool
+        force_charge_2: bool
+        full_charge_request: bool
+      then:
+        - lambda: |-
+            if (battery_number != 1) {
+              ESP_LOGW("pylontech_test", "Unsupported battery_number=%d", battery_number);
+              return;
+            }
+            if (charge_voltage_upper_limit < 0 || charge_voltage_upper_limit > 0xFFFF ||
+                discharge_voltage_lower_limit < 0 || discharge_voltage_lower_limit > 0xFFFF ||
+                max_charge_current < 0 || max_charge_current > 0xFFFF ||
+                max_discharge_current < 0 || max_discharge_current > 0xFFFF) {
+              ESP_LOGW("pylontech_test", "Rejected management update");
+              return;
+            }
+
+            id(pack_1_charge_voltage_upper_limit) = static_cast<uint16_t>(charge_voltage_upper_limit);
+            id(pack_1_discharge_voltage_lower_limit) = static_cast<uint16_t>(discharge_voltage_lower_limit);
+            id(pack_1_max_charge_current) = static_cast<uint16_t>(max_charge_current);
+            id(pack_1_max_discharge_current) = static_cast<uint16_t>(max_discharge_current);
+            id(pack_1_charge_enable) = charge_enable;
+            id(pack_1_discharge_enable) = discharge_enable;
+            id(pack_1_force_charge_1) = force_charge_1;
+            id(pack_1_force_charge_2) = force_charge_2;
+            id(pack_1_full_charge_request) = full_charge_request;
+
+    - action: clear_battery_analog_values
+      variables:
+        battery_number: int
+      then:
+        - lambda: |-
+            if (battery_number != 1) {
+              ESP_LOGW("pylontech_test", "Unsupported battery_number=%d", battery_number);
+              return;
+            }
+            id(pack_1_cell_voltages).reset();
+            id(pack_1_bms_temperature).reset();
+            id(pack_1_cell_temperatures).reset();
+            id(pack_1_current).reset();
+            id(pack_1_voltage).reset();
+            id(pack_1_remaining_capacity).reset();
+            id(pack_1_module_capacity).reset();
+            id(pack_1_cycles).reset();
+
+    - action: clear_battery_management_info
+      variables:
+        battery_number: int
+      then:
+        - lambda: |-
+            if (battery_number != 1) {
+              ESP_LOGW("pylontech_test", "Unsupported battery_number=%d", battery_number);
+              return;
+            }
+            id(pack_1_charge_voltage_upper_limit).reset();
+            id(pack_1_discharge_voltage_lower_limit).reset();
+            id(pack_1_max_charge_current).reset();
+            id(pack_1_max_discharge_current).reset();
+            id(pack_1_charge_enable).reset();
+            id(pack_1_discharge_enable).reset();
+            id(pack_1_force_charge_1).reset();
+            id(pack_1_force_charge_2).reset();
+            id(pack_1_full_charge_request).reset();
+
+logger:
+  level: INFO
+
+external_components:
+  - source:
+      type: local
+      path: EXTERNAL_COMPONENT_PATH
+    components: [pylontech_rs485_battery_emulator]
+
+globals:
+  - id: pack_1_cell_voltages
+    type: esphome::optional<esphome::StaticVector<uint16_t, 16>>
+  - id: pack_1_bms_temperature
+    type: esphome::optional<uint16_t>
+  - id: pack_1_cell_temperatures
+    type: esphome::optional<esphome::StaticVector<uint16_t, 8>>
+  - id: pack_1_current
+    type: esphome::optional<int16_t>
+  - id: pack_1_voltage
+    type: esphome::optional<uint16_t>
+  - id: pack_1_remaining_capacity
+    type: esphome::optional<uint32_t>
+  - id: pack_1_module_capacity
+    type: esphome::optional<uint32_t>
+  - id: pack_1_cycles
+    type: esphome::optional<uint16_t>
+  - id: pack_1_charge_voltage_upper_limit
+    type: esphome::optional<uint16_t>
+  - id: pack_1_discharge_voltage_lower_limit
+    type: esphome::optional<uint16_t>
+  - id: pack_1_max_charge_current
+    type: esphome::optional<uint16_t>
+  - id: pack_1_max_discharge_current
+    type: esphome::optional<uint16_t>
+  - id: pack_1_charge_enable
+    type: esphome::optional<bool>
+  - id: pack_1_discharge_enable
+    type: esphome::optional<bool>
+  - id: pack_1_force_charge_1
+    type: esphome::optional<bool>
+  - id: pack_1_force_charge_2
+    type: esphome::optional<bool>
+  - id: pack_1_full_charge_request
+    type: esphome::optional<bool>
+
+uart:
+  id: uart_bus
+  port: UART_PORT_PATH
+  baud_rate: 115200
+
+pylontech_rs485_battery_emulator:
+  id: battery_emulator
+  uart_id: uart_bus
+  protocol_version: 0x20
+  packs:
+    - battery_number: 1
+      analog_values:
+        cell_voltages: !lambda return id(pack_1_cell_voltages);
+        bms_temperature: !lambda return id(pack_1_bms_temperature);
+        cell_temperatures: !lambda return id(pack_1_cell_temperatures);
+        current: !lambda return id(pack_1_current);
+        voltage: !lambda return id(pack_1_voltage);
+        remaining_capacity: !lambda return id(pack_1_remaining_capacity);
+        module_capacity: !lambda return id(pack_1_module_capacity);
+        cycles: !lambda return id(pack_1_cycles);
+      charge_discharge_management_info:
+        charge_voltage_upper_limit: !lambda return id(pack_1_charge_voltage_upper_limit);
+        discharge_voltage_lower_limit: !lambda return id(pack_1_discharge_voltage_lower_limit);
+        max_charge_current: !lambda return id(pack_1_max_charge_current);
+        max_discharge_current: !lambda return id(pack_1_max_discharge_current);
+        status_flags:
+          charge_enable: !lambda return id(pack_1_charge_enable);
+          discharge_enable: !lambda return id(pack_1_discharge_enable);
+          force_charge_1: !lambda return id(pack_1_force_charge_1);
+          force_charge_2: !lambda return id(pack_1_force_charge_2);
+          full_charge_request: !lambda return id(pack_1_full_charge_request);

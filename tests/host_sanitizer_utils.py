@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import pty
+import socket
 import signal
 import subprocess
 import sys
@@ -71,6 +72,7 @@ class RunningHostBinary:
     master_fd: int
     slave_fd: int
     uart_path: Path
+    api_port: int | None
 
 
 def sanitizer_env() -> dict[str, str]:
@@ -92,15 +94,26 @@ def get_binary_path(config_path: Path) -> Path:
 
 
 def write_runtime_config(
-    tmpdir: str, fixture_path: Path, components_root: Path, uart_path: Path
+    tmpdir: str,
+    fixture_path: Path,
+    components_root: Path,
+    uart_path: Path,
+    api_port: int | None,
 ) -> Path:
     config_path = Path(tmpdir) / fixture_path.name
     config_path.write_text(
         fixture_path.read_text()
         .replace("EXTERNAL_COMPONENT_PATH", str(components_root))
         .replace("UART_PORT_PATH", str(uart_path))
+        .replace("API_PORT", str(api_port) if api_port is not None else "6053")
     )
     return config_path
+
+
+def reserve_unused_tcp_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
 
 
 def start_host_binary(
@@ -112,8 +125,11 @@ def start_host_binary(
     slave_path = os.ttyname(slave_fd)
     uart_path = Path(tempfile.mktemp(prefix="pylontech-uart-", dir="/tmp"))
     uart_path.symlink_to(slave_path)
+    api_port = reserve_unused_tcp_port()
 
-    config_path = write_runtime_config(tmpdir, fixture_path, components_root, uart_path)
+    config_path = write_runtime_config(
+        tmpdir, fixture_path, components_root, uart_path, api_port
+    )
     compile_proc = subprocess.run(
         [sys.executable, "-m", "esphome", "compile", str(config_path)],
         cwd=tmpdir,
@@ -140,6 +156,7 @@ def start_host_binary(
         master_fd=master_fd,
         slave_fd=slave_fd,
         uart_path=uart_path,
+        api_port=api_port,
     )
 
 
