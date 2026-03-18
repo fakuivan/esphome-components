@@ -5,10 +5,7 @@
 #include "esphome/core/helpers.h"
 #include "esphome/core/optional.h"
 #include "esphome/core/template_lambda.h"
-// temporary workaround, we'll put this into one file once we stabilize the
-// command set
-#include "/home/fakui/repos/esphome-projects/esphome-components/components/pylontech_rs485_battery_emulator/pylontech_rs485/command_parsing.hpp"
-#include "/home/fakui/repos/esphome-projects/esphome-components/components/pylontech_rs485_battery_emulator/pylontech_rs485/packet_parsing.hpp"
+#include "pylontech_rs485_transcode.hpp"
 
 #include <array>
 #include <string>
