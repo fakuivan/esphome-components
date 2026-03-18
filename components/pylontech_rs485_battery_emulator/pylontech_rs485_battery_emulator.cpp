@@ -272,25 +272,27 @@ void PylontechRS485BatteryEmulator::handle_frame_() {
         return;
       }
 
-        std::array<uint8_t, MAX_ANALOG_VALUES_RESPONSE_INFO_SIZE> response_info{};
-        response_info[0] = 0;
-        response_info[1] = packet.address;
+      std::array<uint8_t, MAX_ANALOG_VALUES_RESPONSE_INFO_SIZE> response_info{};
+      response_info[0] = 0;
+      response_info[1] = packet.address;
+      const auto response_payload_size =
+          pylontech_rs485::commands::analog_values_response_size(
+              *response,
+              etl::span<uint8_t>(response_info.data() + 2,
+                                 response_info.size() - 2));
       const auto encoded = pylontech_rs485::commands::encode_analog_values_response(
-          *response, etl::span<uint8_t>(response_info.data() + 2, response_info.size() - 2));
+          *response, etl::span<uint8_t>(response_info.data() + 2, response_payload_size));
       if (encoded.has_value()) {
         this->send_status_response_(packet.address,
                                     pylontech_rs485::packet_parsing::Cid2::CommunicationError);
         return;
       }
-        const auto response_info_size =
-          pylontech_rs485::commands::analog_values_response_size(
-            *response,
-            etl::span<uint8_t>(response_info.data() + 2, response_info.size() - 2)) +
+      const auto response_info_size = response_payload_size +
           2;
       this->send_info_response_(packet.address,
                                 pylontech_rs485::packet_parsing::Cid2::Normal,
                                 etl::span<uint8_t>(
-                      response_info.data(), response_info_size));
+                                    response_info.data(), response_info_size));
       return;
     }
     case pylontech_rs485::packet_parsing::Cid2::GetChargeDischargeManagementInfo: {
