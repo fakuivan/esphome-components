@@ -26,7 +26,7 @@ constexpr size_t MAX_ASCII_INFO_LENGTH =
 constexpr size_t MAX_BINARY_INFO_LENGTH =
     MAX_ASCII_INFO_LENGTH / ASCII_BYTES_PER_ENCODED_BYTE;
 
-constexpr etl::optional<size_t> packet_size_from_info_size(size_t info_size) {
+inline constexpr etl::optional<size_t> packet_size_from_info_size(size_t info_size) {
   if (info_size > MAX_BINARY_INFO_LENGTH) {
     return etl::nullopt;
   }
@@ -35,7 +35,7 @@ constexpr etl::optional<size_t> packet_size_from_info_size(size_t info_size) {
 
 enum class PacketSizeError { PacketTooShort, PacketLengthInvalid };
 
-etl::expected<size_t, PacketSizeError> info_size_from_packet_size(
+inline etl::expected<size_t, PacketSizeError> info_size_from_packet_size(
     size_t packet_size) {
   if (packet_size < MIN_FRAME_SIZE) {
     return etl::unexpected{PacketSizeError::PacketTooShort};
@@ -84,7 +84,7 @@ enum class Cid2 : uint8_t {
   GetSoftwareVersion = 0x96,
 };
 
-etl::expected<Cid1, uint8_t> try_parse_cid1(uint8_t cid1) {
+inline etl::expected<Cid1, uint8_t> try_parse_cid1(uint8_t cid1) {
   switch (cid1) {
     case static_cast<uint8_t>(Cid1::BatteryData):
       return Cid1::BatteryData;
@@ -101,7 +101,7 @@ etl::expected<Cid1, uint8_t> try_parse_cid1(uint8_t cid1) {
   case static_cast<uint8_t>(Cid2::value): \
     return Cid2::value;
 
-etl::expected<Cid2, uint8_t> try_parse_cid2(uint8_t cid2) {
+inline etl::expected<Cid2, uint8_t> try_parse_cid2(uint8_t cid2) {
   switch (cid2) {
     PYLONTECH_RS485_CID2_CASE(Normal)
     PYLONTECH_RS485_CID2_CASE(VersionError)
@@ -135,11 +135,11 @@ etl::expected<Cid2, uint8_t> try_parse_cid2(uint8_t cid2) {
 
 #undef PYLONTECH_RS485_CID2_CASE
 
-uint8_t cid1_to_u8(etl::expected<Cid1, uint8_t> cid1) {
+inline uint8_t cid1_to_u8(etl::expected<Cid1, uint8_t> cid1) {
   return cid1 ? static_cast<uint8_t>(*cid1) : cid1.error();
 }
 
-uint8_t cid2_to_u8(etl::expected<Cid2, uint8_t> cid2) {
+inline uint8_t cid2_to_u8(etl::expected<Cid2, uint8_t> cid2) {
   return cid2 ? static_cast<uint8_t>(*cid2) : cid2.error();
 }
 
@@ -151,7 +151,7 @@ struct frame {
   etl::span<uint8_t> info;
 };
 
-etl::optional<uint8_t> decode_hex_byte(uint8_t high, uint8_t low) {
+inline etl::optional<uint8_t> decode_hex_byte(uint8_t high, uint8_t low) {
   const auto decode_hex = [](uint8_t hex) -> int8_t {
     if ((hex >= '0') && (hex <= '9')) {
       return static_cast<int8_t>(hex - '0');
@@ -174,7 +174,7 @@ etl::optional<uint8_t> decode_hex_byte(uint8_t high, uint8_t low) {
   return static_cast<uint8_t>((high_nibble << 4) | low_nibble);
 }
 
-uint16_t make_u16_be(uint8_t hi, uint8_t lo) {
+inline uint16_t make_u16_be(uint8_t hi, uint8_t lo) {
   return (static_cast<uint16_t>(hi) << 8) | static_cast<uint16_t>(lo);
 }
 
@@ -183,25 +183,25 @@ struct length_checksum_split {
   uint16_t length;
 };
 
-length_checksum_split split_checksum(uint16_t len_checksum) {
+inline length_checksum_split split_checksum(uint16_t len_checksum) {
   return {static_cast<uint8_t>((len_checksum >> (4 * 3)) & 0x0f),
           static_cast<uint16_t>(len_checksum & 0x0fff)};
 }
 
-bool length_checksum_split_valid(length_checksum_split split) {
+inline bool length_checksum_split_valid(length_checksum_split split) {
   const uint16_t length_masked = (split.length & 0x0fff);
   const uint8_t checksum_masked = (split.checksum & 0x0f);
   return length_masked == split.length && checksum_masked == split.checksum;
 }
 
-etl::optional<uint16_t> combine_checksum(length_checksum_split split) {
+inline etl::optional<uint16_t> combine_checksum(length_checksum_split split) {
   if (!length_checksum_split_valid(split)) {
     return etl::nullopt;
   }
   return (static_cast<uint16_t>(split.checksum) << (4 * 3)) | split.length;
 }
 
-etl::optional<length_checksum_split> add_length_checksum(
+inline etl::optional<length_checksum_split> add_length_checksum(
     length_checksum_split split) {
   if (!length_checksum_split_valid(split)) {
     return etl::nullopt;
@@ -219,7 +219,7 @@ enum class HexArrayParsingError {
   BadInputCharacters,
 };
 
-[[nodiscard]] etl::optional<HexArrayParsingError> parse_hex_string(
+[[nodiscard]] inline etl::optional<HexArrayParsingError> parse_hex_string(
     etl::span<const uint8_t> input, etl::span<uint8_t> output) {
   if (input.size() != (output.size() * ASCII_BYTES_PER_ENCODED_BYTE)) {
     return HexArrayParsingError::InputOutputSizeMismatch;
@@ -247,13 +247,13 @@ enum class HeaderParsingError {
   InvalidChecksum,
 };
 
-constexpr uint16_t hex_string_checksum(etl::span<const uint8_t> hex_string) {
+inline constexpr uint16_t hex_string_checksum(etl::span<const uint8_t> hex_string) {
   return (
       (~etl::accumulate(hex_string.begin(), hex_string.end(), uint16_t(0))) +
       1U);
 }
 
-etl::expected<frame, HeaderParsingError> parse_frame(
+inline etl::expected<frame, HeaderParsingError> parse_frame(
     etl::span<const uint8_t> frame, etl::span<uint8_t> info_buffer) {
   const auto maybe_size = info_size_from_packet_size(frame.size());
   if (!maybe_size) {
@@ -278,19 +278,19 @@ etl::expected<frame, HeaderParsingError> parse_frame(
   size_t i = 1;
   // DO NOT CHANGE ORDER OR REMOVE/ADD ELEMENTS. This expression depends on
   // i++ being run in the correct order
-  const auto maybe_version = decode_hex_byte(frame[i++], frame[i++]);
-  const auto maybe_address = decode_hex_byte(frame[i++], frame[i++]);
-  const auto maybe_cid1 = decode_hex_byte(frame[i++], frame[i++]);
-  const auto maybe_cid2 = decode_hex_byte(frame[i++], frame[i++]);
-  const auto maybe_length_hi = decode_hex_byte(frame[i++], frame[i++]);
-  const auto maybe_length_lo = decode_hex_byte(frame[i++], frame[i++]);
+  const auto maybe_version = decode_hex_byte(frame[i], frame[i+1]); i+= 2;
+  const auto maybe_address = decode_hex_byte(frame[i], frame[i+1]); i+= 2;
+  const auto maybe_cid1 = decode_hex_byte(frame[i], frame[i+1]); i+=2;
+  const auto maybe_cid2 = decode_hex_byte(frame[i], frame[i+1]); i+=2;
+  const auto maybe_length_hi = decode_hex_byte(frame[i], frame[i+1]); i+=2;
+  const auto maybe_length_lo = decode_hex_byte(frame[i], frame[i+1]); i+=2;
 
   const auto info_hex_len = expected_info_size * ASCII_BYTES_PER_ENCODED_BYTE;
   const auto info_hex =
       etl::span<const uint8_t>(frame.begin() + i, info_hex_len);
   i += info_hex_len;
-  const auto maybe_checksum_hi = decode_hex_byte(frame[i++], frame[i++]);
-  const auto maybe_checksum_lo = decode_hex_byte(frame[i++], frame[i++]);
+  const auto maybe_checksum_hi = decode_hex_byte(frame[i], frame[i+1]); i+=2;
+  const auto maybe_checksum_lo = decode_hex_byte(frame[i], frame[i+1]); i+=2;
 
   if (!maybe_version || !maybe_address || !maybe_cid1 || !maybe_cid2 ||
       !maybe_length_lo || !maybe_length_hi || !maybe_checksum_hi ||
@@ -327,24 +327,24 @@ etl::expected<frame, HeaderParsingError> parse_frame(
     return etl::unexpected{HeaderParsingError::InvalidCharactersOnHexString};
   }
 
-  return pylontech_rs485::frame{
+  return pylontech_rs485::packet_parsing::frame{
       version, address, try_parse_cid1(cid1), try_parse_cid2(cid2), info_buffer,
   };
 }
 
-void write_u8_hex(uint8_t input, etl::span<uint8_t, 2> output) {
+inline void write_u8_hex(uint8_t input, etl::span<uint8_t, 2> output) {
   constexpr auto char_map = "0123456789ABCDEF";
   output[0] = char_map[(input >> 4) & 0xf];
   output[1] = char_map[input & 0xf];
 }
 
-void write_u16_be_hex(uint16_t input, etl::span<uint8_t, 4> output) {
+inline void write_u16_be_hex(uint16_t input, etl::span<uint8_t, 4> output) {
   write_u8_hex((input >> 8) & 0xff, output.subspan<0, 2>());
   write_u8_hex(input & 0xff, output.subspan<2, 2>());
 }
 
-[[nodiscard]] bool write_hex_string(etl::span<const uint8_t> input,
-                                    etl::span<uint8_t> output) {
+[[nodiscard]] inline bool write_hex_string(etl::span<const uint8_t> input,
+                                           etl::span<uint8_t> output) {
   if (input.size() * 2 != output.size()) {
     return false;
   }
@@ -360,7 +360,7 @@ enum struct EncodingError {
   InfoTooLarge,
 };
 
-[[nodiscard]] etl::optional<EncodingError> encode_frame(
+[[nodiscard]] inline etl::optional<EncodingError> encode_frame(
     etl::span<uint8_t> output, const frame& frame) {
   const auto maybe_required_size =
       packet_size_from_info_size(frame.info.size());
