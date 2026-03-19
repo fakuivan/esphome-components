@@ -260,8 +260,7 @@ void PylontechRS485BatteryEmulator::handle_frame_() {
 
       auto *pack = this->find_pack_(packet.address);
       if (pack == nullptr) {
-        this->send_status_response_(packet.address,
-                                    pylontech_rs485::packet_parsing::Cid2::AddressError);
+        // Ignoring if it doesn't match our address (testing if this fixes it)
         return;
       }
 
@@ -311,8 +310,7 @@ void PylontechRS485BatteryEmulator::handle_frame_() {
 
       auto *pack = this->find_pack_(packet.address);
       if (pack == nullptr) {
-        this->send_status_response_(packet.address,
-                                    pylontech_rs485::packet_parsing::Cid2::AddressError);
+        // Ignoring if it doesn't match our address (testing if this fixes it)
         return;
       }
 
