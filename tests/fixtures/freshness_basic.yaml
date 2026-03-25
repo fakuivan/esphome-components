@@ -1,0 +1,35 @@
+esphome:
+  name: freshness-basic-test
+
+host:
+
+external_components:
+  - source:
+      type: local
+      path: ../../components/
+    components: [freshness]
+
+freshness:
+  - id: button_1_freshness
+  - id: button_2_freshness
+    timeout: 5s
+  - id: button_3_freshness
+  - id: combination_freshness
+    timeout: 5s
+    all:
+      - button_1_freshness
+      - button_2_freshness
+      - button_3_freshness
+    on_state_change:
+      - logger.log:
+          format: "combination stale=%d"
+          args: [x]
+
+logger:
+
+interval:
+  - interval: 1s
+    then:
+      - freshness.feed: button_1_freshness
+      - freshness.feed: button_2_freshness
+      - freshness.feed: button_3_freshness

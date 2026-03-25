@@ -1,0 +1,14 @@
+esphome:
+  name: freshness-timeout-too-large
+
+host:
+
+external_components:
+  - source:
+      type: local
+      path: ../../components/
+    components: [freshness]
+
+freshness:
+  - id: leaf_a
+    timeout: 50d

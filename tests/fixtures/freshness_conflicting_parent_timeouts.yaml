@@ -1,0 +1,21 @@
+esphome:
+  name: freshness-conflicting-timeouts
+
+host:
+
+external_components:
+  - source:
+      type: local
+      path: ../../components/
+    components: [freshness]
+
+freshness:
+  - id: leaf_a
+  - id: parent_a
+    timeout: 5s
+    all:
+      - leaf_a
+  - id: parent_b
+    timeout: 7s
+    all:
+      - leaf_a
