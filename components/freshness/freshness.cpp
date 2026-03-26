@@ -30,7 +30,7 @@ void Freshness::loop() {
 }
 
 void Freshness::dump_config() {
-  ESP_LOGCONFIG(TAG, "Freshness:");
+  ESP_LOGCONFIG(TAG, "Freshness '%s':", LOG_STR_ARG(this->name_for_log_()));
   if (this->has_timeout_) {
     ESP_LOGCONFIG(TAG, "  Timeout: %u ms", this->timeout_ms_);
   } else {
@@ -41,7 +41,10 @@ void Freshness::dump_config() {
 }
 
 void Freshness::feed() {
-  this->last_feed_millis_ = millis();
+  const uint32_t now = millis();
+  ESP_LOGD(TAG, "Freshness '%s' bumped at %u ms",
+           LOG_STR_ARG(this->name_for_log_()), now);
+  this->last_feed_millis_ = now;
   this->fed_ = true;
 
   if (this->dependencies_.empty()) {
@@ -75,6 +78,8 @@ void Freshness::refresh_leaf_state_() {
 
   const uint32_t elapsed = millis() - this->last_feed_millis_;
   if (elapsed >= this->timeout_ms_) {
+    ESP_LOGD(TAG, "Freshness '%s' timed out after %u ms (timeout=%u ms)",
+             LOG_STR_ARG(this->name_for_log_()), elapsed, this->timeout_ms_);
     this->set_stale_(true);
   }
 }

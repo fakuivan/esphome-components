@@ -13,6 +13,8 @@ class Freshness : public Component {
   void loop() override;
   void dump_config() override;
 
+  void set_name(const LogString* name) { this->name_ = name; }
+
   void set_timeout(uint32_t timeout_ms) {
     this->timeout_ms_ = timeout_ms;
     this->has_timeout_ = true;
@@ -30,12 +32,17 @@ class Freshness : public Component {
   }
 
  protected:
+  const LogString* name_for_log_() const {
+    ESPHOME_DEBUG_ASSERT(this->name_ != nullptr);
+    return this->name_;
+  }
   void refresh_from_dependencies_();
   void refresh_leaf_state_();
   void set_stale_(bool stale);
 
   FixedVector<Freshness*> dependencies_;
   LazyCallbackManager<void(bool)> state_callbacks_;
+  const LogString* name_{nullptr};
   uint32_t timeout_ms_{0};
   uint32_t last_feed_millis_{0};
   bool stale_{true};

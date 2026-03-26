@@ -161,6 +161,7 @@ FINAL_VALIDATE_SCHEMA = _final_validate
 async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
+    cg.add(var.set_name(cg.LogStringLiteral(config[CONF_ID].id)))
 
     if timeout := config.get(CONF_TIMEOUT):
         cg.add(var.set_timeout(timeout.total_milliseconds))
