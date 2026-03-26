@@ -132,7 +132,7 @@ def _final_validate(config):
         )
 
     if resolved_timeout is not None and CONF_TIMEOUT not in config:
-        config = {**config, CONF_TIMEOUT: resolved_timeout}
+        config[CONF_TIMEOUT] = resolved_timeout
 
     return config
 
