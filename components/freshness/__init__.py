@@ -5,6 +5,8 @@ from esphome.components.const import CONF_ON_STATE_CHANGE
 import esphome.final_validate as fv
 from esphome.const import CONF_ALL, CONF_ID, CONF_TIMEOUT, CONF_TRIGGER_ID
 
+BUILD_CALLBACK_AUTOMATION = getattr(automation, "build_callback_automation", None)
+
 DOMAIN = "freshness"
 MAX_TIMEOUT_MS = (2**32) - 1
 
@@ -173,6 +175,15 @@ async def to_code(config):
         cg.add(var.add_dependency(dependency))
 
     for conf in config.get(CONF_ON_STATE_CHANGE, []):
+        if BUILD_CALLBACK_AUTOMATION is not None:
+            await BUILD_CALLBACK_AUTOMATION(
+                var,
+                "add_on_state_callback",
+                [(cg.bool_, "x")],
+                conf,
+            )
+            continue
+
         trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
         await automation.build_automation(trigger, [(cg.bool_, "x")], conf)
 
