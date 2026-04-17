@@ -32,6 +32,13 @@ Useful for when you need to use custom types on components like `signal` or
 Since that PR is part of core, it cannot be tested using `external_components`,
 thus the existance of this one.
 
+### USB-HID UPS
+
+Initially intended to be a generic component for any UPS with a USB port
+compatible with HID UPS. Now targetting Eaton 5E850IUSB-AR, I'm not sure how
+device-specific this will turn out to be, but initially we'll be locking it
+down to `vendorid = 0463` and `productid = ffff`.
+
 ## AI commandments
 
 ### Base
