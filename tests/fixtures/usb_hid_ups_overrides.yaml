@@ -1,0 +1,32 @@
+esphome:
+  name: usb-hid-ups-overrides
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: esp-idf
+
+logger:
+
+external_components:
+  - source:
+      type: local
+      path: ../../components
+    components: [usb_hid_ups]
+
+usb_host:
+  enable_hubs: true
+  max_transfer_requests: 24
+
+usb_hid_ups:
+  id: test_ups
+  vid: 0x051D
+  pid: 0x0002
+  interface_number: 0
+  interrupt_in_endpoint: 0x81
+  report_descriptor_index: 0
+  normalize_apc_pages: true
+  runtime:
+    name: UPS Runtime Override
+  output_voltage:
+    name: UPS Output Voltage Override

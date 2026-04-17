@@ -1,0 +1,37 @@
+esphome:
+  name: usb-hid-ups-basic
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: esp-idf
+
+logger:
+
+external_components:
+  - source:
+      type: local
+      path: ../../components
+    components: [usb_hid_ups]
+
+usb_host:
+  max_transfer_requests: 16
+
+usb_hid_ups:
+  id: test_ups
+  vid: 0x051D
+  pid: 0x0002
+  update_interval: 30s
+  explore: true
+  battery_level:
+    name: UPS Battery Level
+  runtime:
+    name: UPS Runtime
+  load_percent:
+    name: UPS Load Percent
+  input_voltage:
+    name: UPS Input Voltage
+  output_voltage:
+    name: UPS Output Voltage
+  battery_voltage:
+    name: UPS Battery Voltage
