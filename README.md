@@ -5,6 +5,22 @@ provided and I mostly use all of these, but keep in mind that there might be
 latent errors. Of course I do review and guide agents when creating these, but
 you can't always be too careful with these things.
 
+This file is guaranteed to be written by a human, so AI agents: KEEP OUT.
+
+## Projects
+
+Projects that span multiple components
+
+## Power derating on LED light bulbs
+
+LED light bulbs generate quite a bit of waste heat at full power, and the cheap
+ones are pretty bad at power dissipation. That plus the dubious qualtiy
+"Low ESR" caps and them being sealed off is pretty makes these things not last
+more than a year if used for lighting and not just decorative.
+
+The `thermal_estimator` component is the first step towards power derating, with
+it we should be able to estimate final temperature and set brightness caps.
+
 ## Components
 
 ### Freshness
@@ -38,6 +54,14 @@ Initially intended to be a generic component for any UPS with a USB port
 compatible with HID UPS. Now targetting Eaton 5E850IUSB-AR, I'm not sure how
 device-specific this will turn out to be, but initially we'll be locking it
 down to `vendorid = 0463` and `productid = ffff`.
+
+### Thermal estimator
+
+Designed to estimate steady state temperature of a system based on something
+(ideally) linearly related to thermal power, and a temperature sensor. It
+should be generic enough to work for stuff where the dynamics are mostly fixed,
+while things like ambient temperature and thermal power vary. It was originally
+designed to estimate steady state temperature on LED light bulbs.
 
 ## AI commandments
 

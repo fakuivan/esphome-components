@@ -1,0 +1,44 @@
+esphome:
+  name: thermal-estimator-basic-test
+
+host:
+
+external_components:
+  - source:
+      type: local
+      path: ../../components
+    components: [thermal_estimator]
+
+logger:
+
+sensor:
+  - platform: template
+    id: mcu_temperature
+    name: MCU Temperature
+    lambda: return 42.0f;
+    update_interval: 10s
+
+thermal_estimator:
+  id: bulb_estimator
+  temperature: mcu_temperature
+  thermal_output: return 0.6f;
+  update_interval: 10s
+  initial_thermal_gain: 25.0
+  ambient_temperature:
+    name: Estimated Ambient Temperature
+  estimated_steady_state_temperature:
+    name: Estimated Steady-State Temperature
+  thermal_gain:
+    name: Thermal Gain
+  confidence:
+    name: Thermal Model Confidence
+  normalized_thermal_output:
+    name: Normalized Thermal Output
+  temperature_slope:
+    name: Temperature Slope
+
+interval:
+  - interval: 60s
+    then:
+      - thermal_estimator.freeze_learning: bulb_estimator
+      - thermal_estimator.resume_learning: bulb_estimator
