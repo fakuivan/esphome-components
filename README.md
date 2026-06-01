@@ -95,6 +95,8 @@ thus the existance of this one.
    point, we are back to invalid values; we have just used a type that can
    represent invalid states.
 
+These guidelines apply mostly to definitive versions, not POCs or first drafts.
+
 ### esphome specific
 
 * The `init` pattern is pretty common on esphome, stick to it for esphome-facing
@@ -114,3 +116,6 @@ thus the existance of this one.
   fragmentation is something that affects every one of these devices, and is
   most of the time easy to avoid without much impact to code versatility and
   correctness.
+* Be explicit when referencing magic or protocol-specific constants. Either name
+  them descriptively or add links/references in comments explainig where you got
+  them from.
