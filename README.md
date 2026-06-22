@@ -119,3 +119,9 @@ These guidelines apply mostly to definitive versions, not POCs or first drafts.
 * Be explicit when referencing magic or protocol-specific constants. Either name
   them descriptively or add links/references in comments explainig where you got
   them from.
+* Avoid oversimplifying types at yaml-automation boundaries. This includes
+  unwrapping things like std::expected and std::optional into variables like
+  `ok`, `error`, `value`. That goes against commandment 1 and 6. Doing
+  something like this by default surprises the user and violates the
+  "meaningful types" motto. Same goes with error types, do not try to turn error
+  types into strings before handing them to users.
