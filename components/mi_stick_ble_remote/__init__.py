@@ -9,16 +9,18 @@ from esphome.core import CORE
 DOMAIN = "mi_stick_ble_remote"
 CONF_ADVERTISE_ON_BOOT = "advertise_on_boot"
 CONF_CONNECTED = "connected"
-CONF_LAST_POWER_REPORT_OK = "last_power_report_ok"
-CONF_POWER_PRESS_DURATION = "power_press_duration"
+CONF_LAST_REPORT_OK = "last_report_ok"
+CONF_PRESS_DURATION = "press_duration"
 CONF_PRODUCT_ID = "product_id"
+CONF_STATIC_RANDOM_ADDRESS = "static_random_address"
 CONF_SUSPENDED = "suspended"
 CONF_VENDOR_ID = "vendor_id"
 
 DEFAULT_NAME = "Xiaomi RC"
 DEFAULT_VENDOR_ID = 0x2717
 DEFAULT_PRODUCT_ID = 0x32B9
-DEFAULT_POWER_PRESS_DURATION = "120ms"
+DEFAULT_PRESS_DURATION = "120ms"
+DEFAULT_STATIC_RANDOM_ADDRESS = "D4:1F:E8:2B:71:7E"
 
 mi_stick_ble_remote_ns = cg.esphome_ns.namespace(DOMAIN)
 MiStickBLERemote = mi_stick_ble_remote_ns.class_("MiStickBLERemote", cg.Component)
@@ -29,6 +31,19 @@ StopAdvertisingAction = mi_stick_ble_remote_ns.class_(
     "StopAdvertisingAction", automation.Action
 )
 PowerAction = mi_stick_ble_remote_ns.class_("PowerAction", automation.Action)
+ClearBondsAction = mi_stick_ble_remote_ns.class_("ClearBondsAction", automation.Action)
+WakeAction = mi_stick_ble_remote_ns.class_("WakeAction", automation.Action)
+HomeAction = mi_stick_ble_remote_ns.class_("HomeAction", automation.Action)
+
+
+def validate_static_random_address(value):
+    address = cv.mac_address(value)
+    if address.parts[0] & 0xC0 != 0xC0:
+        raise cv.Invalid(
+            "static_random_address must be a BLE static random address; "
+            "the top two bits of the first byte must be set"
+        )
+    return address
 
 
 CONFIG_SCHEMA = cv.Schema(
@@ -41,13 +56,16 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_VENDOR_ID, default=DEFAULT_VENDOR_ID): cv.hex_uint16_t,
         cv.Optional(CONF_PRODUCT_ID, default=DEFAULT_PRODUCT_ID): cv.hex_uint16_t,
         cv.Optional(
-            CONF_POWER_PRESS_DURATION, default=DEFAULT_POWER_PRESS_DURATION
+            CONF_STATIC_RANDOM_ADDRESS, default=DEFAULT_STATIC_RANDOM_ADDRESS
+        ): validate_static_random_address,
+        cv.Optional(
+            CONF_PRESS_DURATION, default=DEFAULT_PRESS_DURATION
         ): cv.positive_time_period_milliseconds,
         # Keep this enabled while we still want the Mi Stick's boot scan to
         # auto-pair the device. Disable it after manual-only pairing is desired.
         cv.Optional(CONF_ADVERTISE_ON_BOOT, default=True): cv.boolean,
         cv.Optional(CONF_CONNECTED): binary_sensor.binary_sensor_schema(),
-        cv.Optional(CONF_LAST_POWER_REPORT_OK): binary_sensor.binary_sensor_schema(),
+        cv.Optional(CONF_LAST_REPORT_OK): binary_sensor.binary_sensor_schema(),
         cv.Optional(CONF_SUSPENDED): binary_sensor.binary_sensor_schema(),
     }
 ).extend(cv.COMPONENT_SCHEMA)
@@ -67,9 +85,10 @@ async def to_code(config):
     cg.add(var.set_name(config[CONF_NAME]))
     cg.add(var.set_vendor_id(config[CONF_VENDOR_ID]))
     cg.add(var.set_product_id(config[CONF_PRODUCT_ID]))
+    cg.add(var.set_static_random_address(*config[CONF_STATIC_RANDOM_ADDRESS].parts))
     cg.add(
-        var.set_power_press_duration_ms(
-            config[CONF_POWER_PRESS_DURATION].total_milliseconds
+        var.set_press_duration_ms(
+            config[CONF_PRESS_DURATION].total_milliseconds
         )
     )
     cg.add(var.set_advertise_on_boot(config[CONF_ADVERTISE_ON_BOOT]))
@@ -77,9 +96,9 @@ async def to_code(config):
     if CONF_CONNECTED in config:
         sens = await binary_sensor.new_binary_sensor(config[CONF_CONNECTED])
         cg.add(var.set_connected_sensor(sens))
-    if CONF_LAST_POWER_REPORT_OK in config:
-        sens = await binary_sensor.new_binary_sensor(config[CONF_LAST_POWER_REPORT_OK])
-        cg.add(var.set_last_power_report_ok_sensor(sens))
+    if CONF_LAST_REPORT_OK in config:
+        sens = await binary_sensor.new_binary_sensor(config[CONF_LAST_REPORT_OK])
+        cg.add(var.set_last_report_ok_sensor(sens))
     if CONF_SUSPENDED in config:
         sens = await binary_sensor.new_binary_sensor(config[CONF_SUSPENDED])
         cg.add(var.set_suspended_sensor(sens))
@@ -129,5 +148,38 @@ async def stop_advertising_to_code(config, action_id, template_arg, args):
     synchronous=True,
 )
 async def power_to_code(config, action_id, template_arg, args):
+    parent = await cg.get_variable(config[CONF_ID])
+    return cg.new_Pvariable(action_id, template_arg, parent)
+
+
+@automation.register_action(
+    f"{DOMAIN}.clear_bonds",
+    ClearBondsAction,
+    SIMPLE_ACTION_SCHEMA,
+    synchronous=True,
+)
+async def clear_bonds_to_code(config, action_id, template_arg, args):
+    parent = await cg.get_variable(config[CONF_ID])
+    return cg.new_Pvariable(action_id, template_arg, parent)
+
+
+@automation.register_action(
+    f"{DOMAIN}.wake",
+    WakeAction,
+    SIMPLE_ACTION_SCHEMA,
+    synchronous=True,
+)
+async def wake_to_code(config, action_id, template_arg, args):
+    parent = await cg.get_variable(config[CONF_ID])
+    return cg.new_Pvariable(action_id, template_arg, parent)
+
+
+@automation.register_action(
+    f"{DOMAIN}.home",
+    HomeAction,
+    SIMPLE_ACTION_SCHEMA,
+    synchronous=True,
+)
+async def home_to_code(config, action_id, template_arg, args):
     parent = await cg.get_variable(config[CONF_ID])
     return cg.new_Pvariable(action_id, template_arg, parent)

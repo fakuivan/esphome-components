@@ -4,6 +4,7 @@
 #include "esphome/core/log.h"
 
 #include <algorithm>
+#include <array>
 #include <cinttypes>
 #include <cstring>
 
@@ -19,21 +20,29 @@ static const char *const TAG = "mi_stick_ble_remote";
 static MiStickBLERemote *global_remote = nullptr;
 
 static constexpr uint8_t kHidReportMapIndex = 0;
-static constexpr uint8_t kHidReportId = 0;
-static constexpr uint8_t kMiStickPowerReport[3] = {0x20, 0x00, 0x00};
+static constexpr uint8_t kXiaomiRcReportId = 1;
+static constexpr uint8_t kXiaomiRcPowerReport[3] = {0x20, 0x00, 0x00};
+static constexpr uint8_t kXiaomiRcHomeReport[3] = {0x00, 0x00, 0x04};
 static constexpr uint8_t kReleaseReport[3] = {0x00, 0x00, 0x00};
 static constexpr uint8_t kBleFlags =
     ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT;
 static constexpr uint8_t kHidServiceUuid[] = {0x12, 0x18};
 static constexpr uint8_t kAdvertisedTxPower = 0x00;
 static constexpr size_t kMaxBleAdvertisementLength = 31;
+static constexpr size_t kMaxInputReportLength = 3;
+static constexpr size_t kMaxBondedDevicesToClear = 8;
+static constexpr uint32_t kWakeRetryWindowMs = 6000;
+static constexpr uint32_t kWakeRetryDelayMs = 300;
 
-// HID report map and power report values were inferred from local btsnoop
-// captures of the stock Xiaomi RC remote for this Mi Stick.
+// HID report map and report values were inferred from local btsnoop captures of
+// the stock Xiaomi RC remote for this Mi Stick. The Report ID is explicit
+// because Android bonded and woke reliably only after descriptor rediscovery
+// with Report Reference ID 1.
 static constexpr uint8_t XIAOMI_RC_REPORT_MAP[] = {
     0x05, 0x0C,        // Usage Page (Consumer)
     0x09, 0x01,        // Usage (Consumer Control)
     0xA1, 0x01,        // Collection (Application)
+    0x85, 0x01,        //   Report ID (1)
     0x15, 0x00,        //   Logical Minimum (0)
     0x25, 0x01,        //   Logical Maximum (1)
     0x75, 0x01,        //   Report Size (1)
@@ -73,7 +82,7 @@ static constexpr uint8_t XIAOMI_RC_REPORT_MAP[] = {
     0xC0,              // End Collection
 };
 
-static esp_hid_raw_report_map_t report_maps[] = {
+static esp_hid_raw_report_map_t xiaomi_rc_report_maps[] = {
     {
         .data = XIAOMI_RC_REPORT_MAP,
         .len = sizeof(XIAOMI_RC_REPORT_MAP),
@@ -84,7 +93,7 @@ static esp_ble_adv_params_t adv_params = {
     .adv_int_min = 0x20,
     .adv_int_max = 0x30,
     .adv_type = ADV_TYPE_IND,
-    .own_addr_type = BLE_ADDR_TYPE_PUBLIC,
+    .own_addr_type = BLE_ADDR_TYPE_RANDOM,
     .channel_map = ADV_CHNL_ALL,
     .adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
 };
@@ -101,10 +110,10 @@ static void hidd_callback(void *handler_args, esp_event_base_t base, int32_t id,
 }
 
 void MiStickBLERemote::setup() {
-  ESP_LOGI(TAG, "Setting up BLE HID Xiaomi RC remote as %s", this->name_.c_str());
+  ESP_LOGI(TAG, "Setting up Xiaomi RC BLE HID remote as %s", this->name_.c_str());
   global_remote = this;
   this->publish_connected_(false);
-  this->publish_last_power_report_ok_(false);
+  this->publish_last_report_ok_(false);
   this->publish_suspended_(false);
   if (this->advertise_on_boot_)
     this->start_advertising();
@@ -114,7 +123,10 @@ void MiStickBLERemote::dump_config() {
   ESP_LOGCONFIG(TAG, "Mi Stick BLE HID Remote:");
   ESP_LOGCONFIG(TAG, "  Name: %s", this->name_.c_str());
   ESP_LOGCONFIG(TAG, "  VID/PID/version: 0x%04X/0x%04X/0x%04X", this->vendor_id_, this->product_id_, this->version_);
-  ESP_LOGCONFIG(TAG, "  Power Press Duration: %" PRIu32 " ms", this->power_press_duration_ms_);
+  ESP_LOGCONFIG(TAG, "  Static Random Address: %02X:%02X:%02X:%02X:%02X:%02X", this->static_random_address_[0],
+                this->static_random_address_[1], this->static_random_address_[2], this->static_random_address_[3],
+                this->static_random_address_[4], this->static_random_address_[5]);
+  ESP_LOGCONFIG(TAG, "  Press Duration: %" PRIu32 " ms", this->press_duration_ms_);
   ESP_LOGCONFIG(TAG, "  Advertise On Boot: %s", this->advertise_on_boot_ ? "YES" : "NO");
   ESP_LOGCONFIG(TAG, "  Ready: %s", this->ready_ ? "YES" : "NO");
   ESP_LOGCONFIG(TAG, "  Connected: %s", this->connected_ ? "YES" : "NO");
@@ -134,20 +146,95 @@ void MiStickBLERemote::stop_advertising() {
     ESP_LOGW(TAG, "esp_ble_gap_stop_advertising failed: %s", esp_err_to_name(err));
 }
 
-void MiStickBLERemote::power() {
-  if (!this->connected_ || this->hid_dev_ == nullptr) {
-    ESP_LOGW(TAG, "Cannot send BLE POWER because no HID host is connected");
-    this->publish_last_power_report_ok_(false);
+void MiStickBLERemote::clear_bonds() {
+  if (!this->init_ble_())
+    return;
+
+  int dev_num = esp_ble_get_bond_device_num();
+  if (dev_num <= 0) {
+    ESP_LOGI(TAG, "No BLE bonds to clear");
     return;
   }
-  ESP_LOGI(TAG, "Sending Xiaomi RC BLE POWER report");
-  const bool press_report_sent = this->send_report_(kMiStickPowerReport);
-  delay(this->power_press_duration_ms_);
-  const bool release_report_sent = this->release_();
+
+  std::array<esp_ble_bond_dev_t, kMaxBondedDevicesToClear> dev_list{};
+  if (static_cast<size_t>(dev_num) > dev_list.size()) {
+    ESP_LOGW(TAG, "Only clearing the first %zu of %d BLE bond(s)", dev_list.size(), dev_num);
+    dev_num = dev_list.size();
+  }
+
+  esp_err_t err = esp_ble_get_bond_device_list(&dev_num, dev_list.data());
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "esp_ble_get_bond_device_list failed: %s", esp_err_to_name(err));
+    return;
+  }
+
+  ESP_LOGI(TAG, "Clearing %d BLE bond(s)", dev_num);
+  for (int i = 0; i < dev_num; i++) {
+    const uint8_t *addr = dev_list[i].bd_addr;
+    ESP_LOGI(TAG, "Removing BLE bond %02X:%02X:%02X:%02X:%02X:%02X", addr[0], addr[1], addr[2], addr[3], addr[4],
+             addr[5]);
+    err = esp_ble_remove_bond_device(dev_list[i].bd_addr);
+    if (err != ESP_OK)
+      ESP_LOGW(TAG, "esp_ble_remove_bond_device failed: %s", esp_err_to_name(err));
+  }
+}
+
+void MiStickBLERemote::power() {
+  (void) this->send_button_("XIAOMI RC POWER", kHidReportMapIndex, kXiaomiRcReportId, kXiaomiRcPowerReport,
+                            sizeof(kXiaomiRcPowerReport));
+}
+
+void MiStickBLERemote::home() {
+  (void) this->send_home_();
+}
+
+bool MiStickBLERemote::send_home_() {
+  return this->send_button_("XIAOMI RC HOME", kHidReportMapIndex, kXiaomiRcReportId, kXiaomiRcHomeReport,
+                            sizeof(kXiaomiRcHomeReport));
+}
+
+void MiStickBLERemote::wake() {
+  if (this->send_home_())
+    return;
+
+  ESP_LOGW(TAG, "HOME report failed; restarting BLE HID service and retrying for %" PRIu32 " ms",
+           kWakeRetryWindowMs);
+  this->restart_hid_();
+
+  const uint32_t start_ms = millis();
+  while (millis() - start_ms < kWakeRetryWindowMs) {
+    delay(kWakeRetryDelayMs);
+    if (!this->connected_)
+      continue;
+    if (this->send_home_())
+      return;
+  }
+
+  ESP_LOGW(TAG, "HOME wake retry window expired before an input report was accepted");
+  this->publish_last_report_ok_(false);
+}
+
+void MiStickBLERemote::send_xiaomi_report(uint8_t byte0, uint8_t byte1, uint8_t byte2) {
+  const uint8_t report[3] = {byte0, byte1, byte2};
+  (void) this->send_button_("XIAOMI RC RAW", kHidReportMapIndex, kXiaomiRcReportId, report, sizeof(report));
+}
+
+bool MiStickBLERemote::send_button_(const char *label, uint8_t report_map_index, uint8_t report_id,
+                                    const uint8_t *press_report, size_t report_len) {
+  if (!this->connected_ || this->hid_dev_ == nullptr) {
+    ESP_LOGW(TAG, "Cannot send BLE %s because no HID host is connected", label);
+    this->publish_last_report_ok_(false);
+    return false;
+  }
+  ESP_LOGI(TAG, "Sending BLE %s report", label);
+  const bool press_report_sent = this->send_report_(report_map_index, report_id, press_report, report_len);
+  delay(this->press_duration_ms_);
+  const bool release_report_sent = this->release_(report_map_index, report_id, report_len);
   const bool all_reports_sent = press_report_sent && release_report_sent;
-  ESP_LOGI(TAG, "BLE POWER report result: press=%s release=%s", press_report_sent ? "OK" : "FAILED",
+  ESP_LOGI(TAG, "BLE %s report result: press=%s release=%s", label, press_report_sent ? "OK" : "FAILED",
            release_report_sent ? "OK" : "FAILED");
-  this->publish_last_power_report_ok_(all_reports_sent);
+  this->publish_last_report_ok_(all_reports_sent);
+  return all_reports_sent;
 }
 
 bool MiStickBLERemote::init_ble_() {
@@ -190,6 +277,12 @@ bool MiStickBLERemote::init_ble_() {
     }
   }
 
+  // Fixed static-random address keeps bonds stable while avoiding stale Android
+  // cache entries for the ESP32 public address during descriptor experiments.
+  esp_err_t random_addr_err = esp_ble_gap_set_rand_addr(this->static_random_address_);
+  if (random_addr_err != ESP_OK && random_addr_err != ESP_ERR_INVALID_STATE)
+    ESP_LOGW(TAG, "esp_ble_gap_set_rand_addr failed: %s", esp_err_to_name(random_addr_err));
+
   esp_err_t err = esp_ble_gap_register_callback(gap_callback);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "esp_ble_gap_register_callback failed: %s", esp_err_to_name(err));
@@ -230,7 +323,7 @@ bool MiStickBLERemote::init_ble_() {
       .device_name = this->name_.c_str(),
       .manufacturer_name = "ESPHome",
       .serial_number = "esphome-mi-stick-ble",
-      .report_maps = report_maps,
+      .report_maps = xiaomi_rc_report_maps,
       .report_maps_len = 1,
   };
   err = esp_hidd_dev_init(&hid_config, ESP_HID_TRANSPORT_BLE, hidd_callback, &this->hid_dev_);
@@ -316,9 +409,9 @@ void MiStickBLERemote::publish_connected_(bool connected) {
     this->connected_sensor_->publish_state(connected);
 }
 
-void MiStickBLERemote::publish_last_power_report_ok_(bool report_sent) {
-  if (this->last_power_report_ok_sensor_ != nullptr)
-    this->last_power_report_ok_sensor_->publish_state(report_sent);
+void MiStickBLERemote::publish_last_report_ok_(bool report_sent) {
+  if (this->last_report_ok_sensor_ != nullptr)
+    this->last_report_ok_sensor_->publish_state(report_sent);
 }
 
 void MiStickBLERemote::publish_suspended_(bool suspended) {
@@ -326,10 +419,16 @@ void MiStickBLERemote::publish_suspended_(bool suspended) {
     this->suspended_sensor_->publish_state(suspended);
 }
 
-bool MiStickBLERemote::send_report_(const uint8_t report[3]) {
-  uint8_t buffer[3];
-  memcpy(buffer, report, sizeof(buffer));
-  esp_err_t err = esp_hidd_dev_input_set(this->hid_dev_, kHidReportMapIndex, kHidReportId, buffer, sizeof(buffer));
+bool MiStickBLERemote::send_report_(uint8_t report_map_index, uint8_t report_id, const uint8_t *report,
+                                    size_t report_len) {
+  if (report_len > kMaxInputReportLength) {
+    ESP_LOGE(TAG, "BLE HID input report is too long: %zu bytes", report_len);
+    return false;
+  }
+
+  uint8_t buffer[kMaxInputReportLength]{};
+  memcpy(buffer, report, report_len);
+  esp_err_t err = esp_hidd_dev_input_set(this->hid_dev_, report_map_index, report_id, buffer, report_len);
   if (err != ESP_OK) {
     ESP_LOGW(TAG, "esp_hidd_dev_input_set failed: %s", esp_err_to_name(err));
     return false;
@@ -337,7 +436,36 @@ bool MiStickBLERemote::send_report_(const uint8_t report[3]) {
   return true;
 }
 
-bool MiStickBLERemote::release_() { return this->send_report_(kReleaseReport); }
+bool MiStickBLERemote::release_(uint8_t report_map_index, uint8_t report_id, size_t report_len) {
+  return this->send_report_(report_map_index, report_id, kReleaseReport, report_len);
+}
+
+void MiStickBLERemote::restart_hid_() {
+  ESP_LOGI(TAG, "Restarting BLE HID service without clearing bonds");
+
+  if (this->advertising_) {
+    esp_err_t err = esp_ble_gap_stop_advertising();
+    if (err != ESP_OK)
+      ESP_LOGW(TAG, "esp_ble_gap_stop_advertising failed during restart: %s", esp_err_to_name(err));
+  }
+
+  if (this->hid_dev_ != nullptr) {
+    esp_err_t err = esp_hidd_dev_deinit(this->hid_dev_);
+    if (err != ESP_OK)
+      ESP_LOGW(TAG, "esp_hidd_dev_deinit failed during restart: %s", esp_err_to_name(err));
+    this->hid_dev_ = nullptr;
+  }
+
+  this->ready_ = false;
+  this->adv_configured_ = false;
+  this->hidd_started_ = false;
+  this->advertising_ = false;
+  this->connected_ = false;
+  this->publish_connected_(false);
+  this->publish_suspended_(false);
+
+  this->start_advertising();
+}
 
 void MiStickBLERemote::handle_gap_event(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) {
   switch (event) {
