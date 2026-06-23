@@ -32,6 +32,19 @@ Useful for when you need to use custom types on components like `signal` or
 Since that PR is part of core, it cannot be tested using `external_components`,
 thus the existance of this one.
 
+### Xiaomi Mi Stick TV remote
+
+Mostly used to power the device up, since when it's sleeping there's pretty much
+no other way to wake it up besides resetting power to it. Paired BT devices get
+put into an "allowed to wake device" list, which filters based on BT parameters
+that we can emulate. There's also an "auto pair" filter which we're able to pass
+too. In practical terms this means that pairing to an esphome device should be
+as simple as "remove the battery on the current RC, wait for it to pair".
+
+We were also able to test a "wake only" key which does not toggle power on and
+off, instead it allows us to keep trying to power the device while not messing
+with it if it's already on.
+
 ## AI commandments
 
 ### Base
