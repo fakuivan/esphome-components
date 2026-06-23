@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cinttypes>
 #include <cstring>
 
@@ -20,9 +21,15 @@ static const char *const TAG = "mi_stick_ble_remote";
 static MiStickBLERemote *global_remote = nullptr;
 
 static constexpr uint8_t kHidReportMapIndex = 0;
+static constexpr uint8_t kNoReportId = 0;
 static constexpr uint8_t kXiaomiRcReportId = 1;
 static constexpr uint8_t kXiaomiRcPowerReport[3] = {0x20, 0x00, 0x00};
 static constexpr uint8_t kXiaomiRcHomeReport[3] = {0x00, 0x00, 0x04};
+static constexpr uint8_t kGenericLinuxPowerReport[1] = {0x01};
+static constexpr uint8_t kGenericLinuxHomeReport[1] = {0x02};
+static constexpr uint8_t kGenericLinuxBackReport[1] = {0x04};
+static constexpr uint8_t kGenericLinuxWakeupReport[1] = {0x08};
+static constexpr uint8_t kGenericLinuxSleepReport[1] = {0x10};
 static constexpr uint8_t kReleaseReport[3] = {0x00, 0x00, 0x00};
 static constexpr uint8_t kBleFlags =
     ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT;
@@ -89,6 +96,44 @@ static esp_hid_raw_report_map_t xiaomi_rc_report_maps[] = {
     },
 };
 
+// Generic HID descriptor for Android/Linux HID stacks. It avoids
+// Xiaomi-specific button packing and exposes Power, AC Home, AC Back, Generic
+// Desktop System Wake Up, and Generic Desktop System Sleep.
+// Linux hid-input maps Consumer AC Home (0x0223) to KEY_HOMEPAGE, and Android
+// Generic.kl maps that Linux key to KEYCODE_HOME. Linux maps Generic Desktop
+// System Wake Up (0x0183) to KEY_WAKEUP, and Android Generic.kl maps Linux
+// key 143 to WAKEUP. System Sleep (0x0182) follows the same path as KEY_SLEEP,
+// Android key 142.
+// Sources:
+// https://github.com/torvalds/linux/blob/master/drivers/hid/hid-input.c
+// https://android.googlesource.com/platform/frameworks/base/+/refs/heads/master/data/keyboards/Generic.kl
+static constexpr uint8_t GENERIC_LINUX_REMOTE_REPORT_MAP[] = {
+    0x05, 0x0C,        // Usage Page (Consumer)
+    0x09, 0x01,        // Usage (Consumer Control)
+    0xA1, 0x01,        // Collection (Application)
+    0x15, 0x00,        //   Logical Minimum (0)
+    0x25, 0x01,        //   Logical Maximum (1)
+    0x75, 0x01,        //   Report Size (1)
+    0x09, 0x30,        //   Usage (Power)
+    0x0A, 0x23, 0x02,  //   Usage (AC Home)
+    0x0A, 0x24, 0x02,  //   Usage (AC Back)
+    0x05, 0x01,        //   Usage Page (Generic Desktop)
+    0x09, 0x83,        //   Usage (System Wake Up)
+    0x09, 0x82,        //   Usage (System Sleep)
+    0x95, 0x05,        //   Report Count (5)
+    0x81, 0x02,        //   Input (Data, Variable, Absolute)
+    0x95, 0x03,        //   Report Count (3)
+    0x81, 0x03,        //   Input (Constant, Variable, Absolute)
+    0xC0,              // End Collection
+};
+
+static esp_hid_raw_report_map_t generic_linux_report_maps[] = {
+    {
+        .data = GENERIC_LINUX_REMOTE_REPORT_MAP,
+        .len = sizeof(GENERIC_LINUX_REMOTE_REPORT_MAP),
+    },
+};
+
 static esp_ble_adv_params_t adv_params = {
     .adv_int_min = 0x20,
     .adv_int_max = 0x30,
@@ -109,8 +154,19 @@ static void hidd_callback(void *handler_args, esp_event_base_t base, int32_t id,
                                      static_cast<esp_hidd_event_data_t *>(event_data));
 }
 
+static const char *hid_profile_name(HidProfile profile) {
+  switch (profile) {
+    case HidProfile::XIAOMI_RC:
+      return "xiaomi_rc";
+    case HidProfile::GENERIC_LINUX:
+      return "generic_linux";
+  }
+  assert(false);
+  return "invalid";
+}
+
 void MiStickBLERemote::setup() {
-  ESP_LOGI(TAG, "Setting up Xiaomi RC BLE HID remote as %s", this->name_.c_str());
+  ESP_LOGI(TAG, "Setting up BLE HID remote as %s (%s)", this->name_.c_str(), hid_profile_name(this->hid_profile_));
   global_remote = this;
   this->publish_connected_(false);
   this->publish_last_report_ok_(false);
@@ -122,7 +178,9 @@ void MiStickBLERemote::setup() {
 void MiStickBLERemote::dump_config() {
   ESP_LOGCONFIG(TAG, "Mi Stick BLE HID Remote:");
   ESP_LOGCONFIG(TAG, "  Name: %s", this->name_.c_str());
+  ESP_LOGCONFIG(TAG, "  HID Profile: %s", hid_profile_name(this->hid_profile_));
   ESP_LOGCONFIG(TAG, "  VID/PID/version: 0x%04X/0x%04X/0x%04X", this->vendor_id_, this->product_id_, this->version_);
+  ESP_LOGCONFIG(TAG, "  BLE Appearance: 0x%04X", this->appearance_);
   ESP_LOGCONFIG(TAG, "  Static Random Address: %02X:%02X:%02X:%02X:%02X:%02X", this->static_random_address_[0],
                 this->static_random_address_[1], this->static_random_address_[2], this->static_random_address_[3],
                 this->static_random_address_[4], this->static_random_address_[5]);
@@ -180,6 +238,11 @@ void MiStickBLERemote::clear_bonds() {
 }
 
 void MiStickBLERemote::power() {
+  if (this->hid_profile_ == HidProfile::GENERIC_LINUX) {
+    (void) this->send_button_("GENERIC LINUX POWER", kHidReportMapIndex, kNoReportId, kGenericLinuxPowerReport,
+                              sizeof(kGenericLinuxPowerReport));
+    return;
+  }
   (void) this->send_button_("XIAOMI RC POWER", kHidReportMapIndex, kXiaomiRcReportId, kXiaomiRcPowerReport,
                             sizeof(kXiaomiRcPowerReport));
 }
@@ -188,16 +251,30 @@ void MiStickBLERemote::home() {
   (void) this->send_home_();
 }
 
+void MiStickBLERemote::back() {
+  if (this->hid_profile_ == HidProfile::GENERIC_LINUX) {
+    (void) this->send_button_("GENERIC LINUX BACK", kHidReportMapIndex, kNoReportId, kGenericLinuxBackReport,
+                              sizeof(kGenericLinuxBackReport));
+    return;
+  }
+  ESP_LOGW(TAG, "Back is only implemented for the generic_linux HID profile");
+  this->publish_last_report_ok_(false);
+}
+
 bool MiStickBLERemote::send_home_() {
+  if (this->hid_profile_ == HidProfile::GENERIC_LINUX) {
+    return this->send_button_("GENERIC LINUX HOME", kHidReportMapIndex, kNoReportId, kGenericLinuxHomeReport,
+                              sizeof(kGenericLinuxHomeReport));
+  }
   return this->send_button_("XIAOMI RC HOME", kHidReportMapIndex, kXiaomiRcReportId, kXiaomiRcHomeReport,
                             sizeof(kXiaomiRcHomeReport));
 }
 
 void MiStickBLERemote::wake() {
-  if (this->send_home_())
+  if (this->send_wakeup_())
     return;
 
-  ESP_LOGW(TAG, "HOME report failed; restarting BLE HID service and retrying for %" PRIu32 " ms",
+  ESP_LOGW(TAG, "WAKEUP report failed; restarting BLE HID service and retrying for %" PRIu32 " ms",
            kWakeRetryWindowMs);
   this->restart_hid_();
 
@@ -206,12 +283,34 @@ void MiStickBLERemote::wake() {
     delay(kWakeRetryDelayMs);
     if (!this->connected_)
       continue;
-    if (this->send_home_())
+    if (this->send_wakeup_())
       return;
   }
 
-  ESP_LOGW(TAG, "HOME wake retry window expired before an input report was accepted");
+  ESP_LOGW(TAG, "WAKEUP retry window expired before an input report was accepted");
   this->publish_last_report_ok_(false);
+}
+
+bool MiStickBLERemote::send_wakeup_() {
+  if (this->hid_profile_ == HidProfile::GENERIC_LINUX) {
+    return this->send_button_("GENERIC LINUX WAKEUP", kHidReportMapIndex, kNoReportId, kGenericLinuxWakeupReport,
+                              sizeof(kGenericLinuxWakeupReport));
+  }
+  return this->send_home_();
+}
+
+void MiStickBLERemote::sleep() {
+  (void) this->send_sleep_();
+}
+
+bool MiStickBLERemote::send_sleep_() {
+  if (this->hid_profile_ == HidProfile::GENERIC_LINUX) {
+    return this->send_button_("GENERIC LINUX SLEEP", kHidReportMapIndex, kNoReportId, kGenericLinuxSleepReport,
+                              sizeof(kGenericLinuxSleepReport));
+  }
+  ESP_LOGW(TAG, "Sleep is only implemented for the generic_linux HID profile");
+  this->publish_last_report_ok_(false);
+  return false;
 }
 
 void MiStickBLERemote::send_xiaomi_report(uint8_t byte0, uint8_t byte1, uint8_t byte2) {
@@ -316,6 +415,11 @@ bool MiStickBLERemote::init_ble_() {
   if (!this->configure_advertising_())
     return false;
 
+  esp_hid_raw_report_map_t *report_maps = xiaomi_rc_report_maps;
+  uint8_t report_maps_len = 1;
+  if (this->hid_profile_ == HidProfile::GENERIC_LINUX)
+    report_maps = generic_linux_report_maps;
+
   esp_hid_device_config_t hid_config = {
       .vendor_id = this->vendor_id_,
       .product_id = this->product_id_,
@@ -323,8 +427,8 @@ bool MiStickBLERemote::init_ble_() {
       .device_name = this->name_.c_str(),
       .manufacturer_name = "ESPHome",
       .serial_number = "esphome-mi-stick-ble",
-      .report_maps = xiaomi_rc_report_maps,
-      .report_maps_len = 1,
+      .report_maps = report_maps,
+      .report_maps_len = report_maps_len,
   };
   err = esp_hidd_dev_init(&hid_config, ESP_HID_TRANSPORT_BLE, hidd_callback, &this->hid_dev_);
   if (err != ESP_OK) {
@@ -351,6 +455,14 @@ bool MiStickBLERemote::configure_advertising_() {
     return false;
   if (!this->append_adv_field_(ESP_BLE_AD_TYPE_16SRV_CMPL, kHidServiceUuid, sizeof(kHidServiceUuid)))
     return false;
+  const uint8_t appearance[] = {
+      static_cast<uint8_t>(this->appearance_ & 0xFF),
+      static_cast<uint8_t>(this->appearance_ >> 8),
+  };
+  if (this->appearance_ != 0 &&
+      !this->append_adv_field_(ESP_BLE_AD_TYPE_APPEARANCE, appearance, sizeof(appearance))) {
+    return false;
+  }
   // Xiaomi's BleRemoteService extracts TX power while deciding whether to auto-pair.
   if (!this->append_adv_field_(ESP_BLE_AD_TYPE_TX_PWR, &kAdvertisedTxPower, sizeof(kAdvertisedTxPower)))
     return false;

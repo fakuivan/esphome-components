@@ -13,6 +13,11 @@
 
 namespace esphome::mi_stick_ble_remote {
 
+enum class HidProfile : uint8_t {
+  XIAOMI_RC = 0,
+  GENERIC_LINUX = 1,
+};
+
 class MiStickBLERemote : public Component {
  public:
   void setup() override;
@@ -32,6 +37,8 @@ class MiStickBLERemote : public Component {
   }
   void set_press_duration_ms(uint32_t duration_ms) { this->press_duration_ms_ = duration_ms; }
   void set_advertise_on_boot(bool advertise_on_boot) { this->advertise_on_boot_ = advertise_on_boot; }
+  void set_appearance(uint16_t appearance) { this->appearance_ = appearance; }
+  void set_hid_profile(uint8_t hid_profile) { this->hid_profile_ = static_cast<HidProfile>(hid_profile); }
   void set_connected_sensor(binary_sensor::BinarySensor *sensor) { this->connected_sensor_ = sensor; }
   void set_last_report_ok_sensor(binary_sensor::BinarySensor *sensor) { this->last_report_ok_sensor_ = sensor; }
   void set_suspended_sensor(binary_sensor::BinarySensor *sensor) { this->suspended_sensor_ = sensor; }
@@ -41,7 +48,9 @@ class MiStickBLERemote : public Component {
   void clear_bonds();
   void power();
   void home();
+  void back();
   void wake();
+  void sleep();
   void send_xiaomi_report(uint8_t byte0, uint8_t byte1, uint8_t byte2);
   void handle_gap_event(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param);
   void handle_hidd_event(esp_hidd_event_t event, esp_hidd_event_data_t *param);
@@ -55,6 +64,8 @@ class MiStickBLERemote : public Component {
   void publish_connected_(bool connected);
   void publish_last_report_ok_(bool report_sent);
   void publish_suspended_(bool suspended);
+  bool send_wakeup_();
+  bool send_sleep_();
   bool send_home_();
   bool send_button_(const char *label, uint8_t report_map_index, uint8_t report_id, const uint8_t *press_report,
                     size_t report_len);
@@ -62,13 +73,15 @@ class MiStickBLERemote : public Component {
   bool release_(uint8_t report_map_index, uint8_t report_id, size_t report_len);
   void restart_hid_();
 
-  std::string name_{"Xiaomi RC"};
+  std::string name_{"MI RC"};
   uint16_t vendor_id_{0x2717};
   uint16_t product_id_{0x32B9};
   uint16_t version_{0x0001};
   esp_bd_addr_t static_random_address_{0xD4, 0x1F, 0xE8, 0x2B, 0x71, 0x7E};
   uint32_t press_duration_ms_{120};
   bool advertise_on_boot_{true};
+  uint16_t appearance_{0x0000};
+  HidProfile hid_profile_{HidProfile::GENERIC_LINUX};
   bool ready_{false};
   bool adv_configured_{false};
   bool hidd_started_{false};
@@ -127,10 +140,28 @@ template<typename... Ts> class WakeAction : public Action<Ts...> {
   MiStickBLERemote *parent_;
 };
 
+template<typename... Ts> class SleepAction : public Action<Ts...> {
+ public:
+  explicit SleepAction(MiStickBLERemote *parent) : parent_(parent) {}
+  void play(const Ts &...x) override { this->parent_->sleep(); }
+
+ protected:
+  MiStickBLERemote *parent_;
+};
+
 template<typename... Ts> class HomeAction : public Action<Ts...> {
  public:
   explicit HomeAction(MiStickBLERemote *parent) : parent_(parent) {}
   void play(const Ts &...x) override { this->parent_->home(); }
+
+ protected:
+  MiStickBLERemote *parent_;
+};
+
+template<typename... Ts> class BackAction : public Action<Ts...> {
+ public:
+  explicit BackAction(MiStickBLERemote *parent) : parent_(parent) {}
+  void play(const Ts &...x) override { this->parent_->back(); }
 
  protected:
   MiStickBLERemote *parent_;
